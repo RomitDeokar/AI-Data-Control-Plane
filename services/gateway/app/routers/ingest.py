@@ -45,9 +45,11 @@ def _trigger_kestra_flow(dataset: str, source_uri: str, trigger_type: str) -> di
         logger.warning("kestra trigger returned %s: %s", response.status_code, response.text[:300])
         return {"triggered": False, "status_code": response.status_code}
     except httpx.HTTPError as exc:
-        # Not fatal — the event is on the bus; Kestra's polling trigger will pick it up.
-        logger.warning("kestra unreachable (%s); event remains queued on the bus", exc)
-        return {"triggered": False, "reason": "kestra unreachable, event queued"}
+        # Not fatal — the event is durably on the stream with dispatched=false.
+        # The event-relay flow (controlplane.relay) re-triggers it once Kestra
+        # is reachable again, so an accepted upload is never silently lost.
+        logger.warning("kestra unreachable (%s); event queued for relay redelivery", exc)
+        return {"triggered": False, "reason": "kestra unreachable, event queued for relay"}
 
 
 @router.post("/ingest/upload")
@@ -117,6 +119,11 @@ async def upload_file(
         }
 
     kestra = _trigger_kestra_flow(dataset, source_uri, "event")
+    if kestra.get("triggered"):
+        # Only now is the event safely in Kestra's hands — mark it dispatched so
+        # the relay won't redundantly re-fire it. If this call had failed the
+        # event stays dispatched=false and the relay picks it up later.
+        bus.mark_dispatched(event_id)
     return {
         "status": "accepted",
         "dataset": dataset,
@@ -155,6 +162,8 @@ async def webhook_ingest(payload: WebhookPayload) -> dict[str, Any]:
         return {"status": "duplicate", "source_uri": source_uri}
 
     kestra = _trigger_kestra_flow(payload.dataset, source_uri, "webhook")
+    if kestra.get("triggered"):
+        bus.mark_dispatched(event_id)
     return {
         "status": "accepted",
         "dataset": payload.dataset,

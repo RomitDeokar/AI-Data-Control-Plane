@@ -110,10 +110,21 @@ class MetadataRegistry:
         return row[0] if row else None
 
     def get_previous_promoted(self, dataset: str, exclude_current: str | None) -> str | None:
-        """Version id of the most recent promoted version other than current."""
-        exclude_version = (
-            exclude_current.replace(f"{dataset}__", "", 1) if exclude_current else ""
-        )
+        """Version id of the most recent promoted version other than current.
+
+        ``exclude_current`` may be either a bare ``version_id`` *or* a Qdrant
+        collection name (``{dataset}__{version_id}``) — the latter is what the
+        vector store's ``get_alias_target`` returns. We normalise to a version
+        id by stripping the ``{dataset}__`` prefix if (and only if) it is present.
+        """
+        collection_prefix = f"{dataset}__"
+        exclude_version = ""
+        if exclude_current:
+            exclude_version = (
+                exclude_current[len(collection_prefix):]
+                if exclude_current.startswith(collection_prefix)
+                else exclude_current
+            )
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT version_id FROM controlplane.dataset_versions

@@ -85,6 +85,21 @@ def test_scheduled_rebuild_uses_subflow_composition():
     assert any(t["type"].endswith("trigger.Schedule") for t in triggers)
 
 
+def test_event_relay_is_scheduled_and_calls_relay_module():
+    path = FLOW_DIR / "_system" / "event-relay.yaml"
+    flow = load(path)
+    text = path.read_text()
+    # runs on a schedule (the backstop poller)
+    triggers = flow.get("triggers", [])
+    assert any(t["type"].endswith("trigger.Schedule") for t in triggers), (
+        "event-relay must be scheduled to poll the bus"
+    )
+    # actually invokes the relay module we ship (not a dangling reference)
+    assert "controlplane.relay" in text, (
+        "event-relay flow must call `python -m controlplane.relay`"
+    )
+
+
 def test_unique_flow_ids_within_namespace():
     seen = set()
     for path in FLOW_FILES:

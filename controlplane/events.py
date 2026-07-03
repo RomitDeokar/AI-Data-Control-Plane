@@ -1,11 +1,31 @@
-"""Redis Streams event bus with idempotency + dead-letter queue.
+"""Redis Streams event bus with idempotency, durable relay, and a dead-letter queue.
 
 Why an event bus in front of Kestra?
 ------------------------------------
 The gateway publishes ``dataset.ingested`` events here. This decouples ingestion
-from orchestration: if Kestra is restarting, events queue up instead of being
-lost. Consumers use a consumer group so events are processed exactly once per
-group, and poison messages are routed to a dead-letter stream after max retries.
+from orchestration: if Kestra is restarting when an upload arrives, the event is
+still durably recorded on the stream and a background **relay** re-triggers the
+pipeline later. That is what makes the platform's central reliability claim —
+*"an accepted upload is never silently lost"* — actually true rather than a
+comment that hopes a non-existent consumer will save the day.
+
+Delivery semantics (honest version)
+-----------------------------------
+* **At the front door** — a duplicate upload (same content hash) is dropped by an
+  ``SET NX`` idempotency lock, so we get effective *exactly-once processing* for
+  identical payloads.
+* **On the wire** — the stream + consumer group + delivery counter give
+  *at-least-once* delivery. Every event carries a ``dispatched`` flag:
+
+  ============  ================================================================
+  scenario      what happens
+  ============  ================================================================
+  happy path    gateway triggers Kestra, immediately marks ``dispatched=true``
+  Kestra down   trigger fails → event stays ``dispatched=false`` on the stream
+  relay tick    relay claims undispatched events, re-triggers, marks dispatched
+  relay crash   un-ACKed events are redelivered on the next relay read
+  poison event  after ``event_max_deliveries`` tries it moves to the ``:dlq``
+  ============  ================================================================
 """
 
 from __future__ import annotations
@@ -21,7 +41,7 @@ from controlplane.config import settings
 logger = logging.getLogger(__name__)
 
 DLQ_SUFFIX = ":dlq"
-MAX_DELIVERIES = 3
+DISPATCH_SET = "cp:dispatched"  # Redis SET of event ids already handed to Kestra
 
 
 class EventBus:
@@ -29,24 +49,47 @@ class EventBus:
         self.redis = redis.Redis.from_url(url or settings.redis_url, decode_responses=True)
         self.stream = stream or settings.event_stream
         self.group = settings.event_consumer_group
+        self.max_deliveries = settings.event_max_deliveries
 
     # ---------------------------------------------------------------- publish
     def publish(self, event_type: str, payload: dict[str, Any]) -> str:
-        """Publish an event; idempotent per (event_type, idempotency_key)."""
+        """Publish an event durably; idempotent per (event_type, idempotency_key).
+
+        Returns the stream message id, or the string ``"duplicate"`` if an
+        identical event was already accepted inside the idempotency window.
+        """
         idempotency_key = payload.get("idempotency_key")
         if idempotency_key:
             lock_key = f"cp:idem:{event_type}:{idempotency_key}"
-            # NX set = first writer wins; duplicates are silently dropped
-            if not self.redis.set(lock_key, "1", nx=True, ex=86400):
+            # NX set = first writer wins; duplicates are silently dropped.
+            if not self.redis.set(
+                lock_key, "1", nx=True, ex=settings.idempotency_ttl_seconds
+            ):
                 logger.warning("duplicate event dropped: %s/%s", event_type, idempotency_key)
                 return "duplicate"
 
         event_id = self.redis.xadd(
             self.stream,
-            {"type": event_type, "payload": json.dumps(payload, default=str)},
+            {
+                "type": event_type,
+                "payload": json.dumps(payload, default=str),
+                "dispatched": "0",
+            },
         )
         logger.info("published %s → %s (%s)", event_type, self.stream, event_id)
         return event_id
+
+    def mark_dispatched(self, event_id: str) -> None:
+        """Record that an event was successfully handed to Kestra.
+
+        We use a side SET rather than rewriting the stream entry (stream fields
+        are immutable) so the relay can cheaply skip already-dispatched events.
+        """
+        self.redis.sadd(DISPATCH_SET, event_id)
+        self.redis.expire(DISPATCH_SET, settings.idempotency_ttl_seconds)
+
+    def is_dispatched(self, event_id: str) -> bool:
+        return bool(self.redis.sismember(DISPATCH_SET, event_id))
 
     # ---------------------------------------------------------------- consume
     def ensure_group(self) -> None:
@@ -57,11 +100,60 @@ class EventBus:
                 raise
 
     def consume(self, consumer: str, count: int = 10, block_ms: int = 2000) -> list[dict[str, Any]]:
-        """Read new events for this consumer group."""
+        """Read *new* events for this consumer group (``>``)."""
         self.ensure_group()
         entries = self.redis.xreadgroup(
             self.group, consumer, {self.stream: ">"}, count=count, block=block_ms
         )
+        return self._parse(entries)
+
+    def claim_undispatched(self, consumer: str, count: int | None = None) -> list[dict[str, Any]]:
+        """Return events that still need dispatching to Kestra.
+
+        Reads both *new* messages and *previously-delivered-but-un-ACKed* messages
+        (``0`` history) for this group, filters out any already marked dispatched,
+        and attaches the per-message delivery count so the caller can dead-letter
+        poison events. This is the relay's workhorse.
+        """
+        self.ensure_group()
+        limit = count or settings.relay_batch_size
+
+        # First drain our own pending backlog (id="0"): messages this consumer
+        # was already delivered but never ACKed (e.g. a previous relay crashed
+        # mid-flight, or Kestra was down last tick). Only if the backlog is empty
+        # do we pull brand-new messages (id=">"). Reading the two ranges in
+        # separate ticks — rather than both at once — is what keeps the delivery
+        # counter honest (a fresh message must not count as delivered twice).
+        backlog = self._parse(
+            self.redis.xreadgroup(self.group, consumer, {self.stream: "0"}, count=limit)
+        )
+        source = backlog
+        if not backlog:
+            source = self._parse(
+                self.redis.xreadgroup(
+                    self.group, consumer, {self.stream: ">"}, count=limit, block=100
+                )
+            )
+
+        events: list[dict[str, Any]] = []
+        for event in source:
+            mid = event["id"]
+            if self.is_dispatched(mid):
+                # Already handed to Kestra by the gateway; just ACK & skip.
+                self.ack(mid)
+                continue
+            event["deliveries"] = self._delivery_count(mid)
+            events.append(event)
+        return events
+
+    def _delivery_count(self, message_id: str) -> int:
+        info = self.redis.xpending_range(
+            self.stream, self.group, min=message_id, max=message_id, count=1
+        )
+        return int(info[0]["times_delivered"]) if info else 1
+
+    @staticmethod
+    def _parse(entries: Any) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         for _stream, messages in entries or []:
             for message_id, fields in messages:
@@ -70,6 +162,7 @@ class EventBus:
                         "id": message_id,
                         "type": fields.get("type"),
                         "payload": json.loads(fields.get("payload", "{}")),
+                        "dispatched": fields.get("dispatched", "0") == "1",
                     }
                 )
         return events
@@ -98,4 +191,5 @@ class EventBus:
             "pending": info.get("pending", 0),
             "stream_length": self.redis.xlen(self.stream),
             "dlq_length": self.redis.xlen(self.stream + DLQ_SUFFIX),
+            "dispatched": self.redis.scard(DISPATCH_SET),
         }

@@ -45,11 +45,19 @@ stopped at the door.
 
 ## "What happens if the orchestrator is down when data arrives?"
 
-The gateway publishes to a **Redis Streams event bus** *before* Kestra is
-involved. If Kestra is restarting, events queue on the bus instead of being lost.
-Duplicate uploads are dropped via **idempotency keys** (content hashes), and
-messages that repeatedly fail are routed to a **dead-letter queue** for
-inspection rather than blocking the stream.
+The gateway writes the event to a **Redis Streams event bus** *before* Kestra is
+involved, with a `dispatched` flag. On the happy path it triggers Kestra directly
+and flips the flag to `true`. If Kestra is restarting, the event stays
+`dispatched=false`, and a **scheduled relay** (`controlplane.relay`, run every
+minute by `event-relay.yaml`) claims it via a consumer group and re-triggers the
+pipeline once Kestra is reachable — so *an accepted upload is never silently lost*.
+
+I'm careful to state the guarantee honestly: it's **at-least-once delivery** with
+**exactly-once processing for identical payloads** (content-hash idempotency drops
+duplicates at the front door). Messages that repeatedly fail are routed to a
+**dead-letter queue** after `EVENT_MAX_DELIVERIES` attempts rather than looping
+forever. The relay is covered by `tests/test_relay.py`, so the pickup is *proven*,
+not hoped for — that's the detail I'd want an interviewer to notice.
 
 ---
 
@@ -110,5 +118,5 @@ can *see* the cutover in query results.
 - "I made stages **independently retryable** by hand-off through storage."
 - "I chose **graceful degradation** (quarantine) over fail-fast at the row level,
   but **fail-closed** at the version level (gates)."
-- "I kept the flows thin so **logic stays testable** — 68 tests, CI on every push."
+- "I kept the flows thin so **logic stays testable** — 79 tests, CI on every push."
 - "I named the **tradeoffs of Kestra** up front and designed around them."

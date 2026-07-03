@@ -117,7 +117,10 @@ promote → results change; roll back → results revert. That's the demo money-
 - **Retries with exponential backoff** on every Kestra script task.
 - **Timeouts** per task so a hung stage can't block the graph forever.
 - **Idempotency keys** (content hash) drop duplicate uploads at the event bus.
-- **Dead-letter queue** captures poison messages after `MAX_DELIVERIES`.
+- **Durable event relay** — every event carries a `dispatched` flag; the scheduled
+  `controlplane.relay` re-drives any `dispatched=false` event (e.g. Kestra was down
+  at ingest), giving honest at-least-once delivery on top of exactly-once processing.
+- **Dead-letter queue** captures poison messages after `EVENT_MAX_DELIVERIES`.
 - **Quarantine over failure** — one bad row doesn't kill the batch.
 - **Blue/green** — a failed rebuild never affects what production serves.
 

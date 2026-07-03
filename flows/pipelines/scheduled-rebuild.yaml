@@ -1,0 +1,75 @@
+# ==============================================================================
+# Scheduled Full Rebuild — nightly re-processing of the latest raw data
+# ------------------------------------------------------------------------------
+# Demonstrates: cron scheduling, subflow composition (this flow *reuses* the
+# flagship dataset-pipeline instead of duplicating logic), and ForEach fan-out
+# across multiple datasets in parallel.
+# ==============================================================================
+
+id: scheduled-rebuild
+namespace: controlplane.pipelines
+
+description: |
+  Nightly rebuild of all registered datasets. Finds the newest raw object per
+  dataset and re-runs the full dataset-pipeline (validate → enrich → embed →
+  gate → promote). Because promotion is blue/green, a failed rebuild never
+  affects what production is serving.
+
+labels:
+  team: platform
+  tier: production
+  pipeline: scheduled-rebuild
+
+variables:
+  datasets: ["products", "documents"]
+
+tasks:
+  - id: rebuild_each_dataset
+    type: io.kestra.plugin.core.flow.ForEach
+    description: Fan out one pipeline execution per dataset, in parallel.
+    values: "{{ vars.datasets }}"
+    concurrencyLimit: 2
+    tasks:
+      - id: find_latest_raw
+        type: io.kestra.plugin.scripts.python.Script
+        description: Locate the newest raw object for this dataset.
+        containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+        timeout: PT2M
+        env:
+          MINIO_ENDPOINT: "minio:9000"
+          MINIO_ACCESS_KEY: "minioadmin"
+          MINIO_SECRET_KEY: "minioadmin"
+        beforeCommands:
+          - pip install -q minio
+        script: |
+          import json, os
+          from minio import Minio
+
+          client = Minio(os.environ["MINIO_ENDPOINT"],
+                         access_key=os.environ["MINIO_ACCESS_KEY"],
+                         secret_key=os.environ["MINIO_SECRET_KEY"], secure=False)
+          dataset = "{{ taskrun.value }}"
+          objects = sorted(
+              client.list_objects("raw", prefix=f"{dataset}/", recursive=True),
+              key=lambda o: o.last_modified or 0,
+          )
+          uri = f"s3://raw/{objects[-1].object_name}" if objects else ""
+          print("::" + json.dumps({"outputs": {"source_uri": uri}}) + "::")
+
+      - id: run_pipeline
+        type: io.kestra.plugin.core.flow.Subflow
+        description: Delegate to the flagship pipeline — one engine, many callers.
+        namespace: controlplane.ingestion
+        flowId: dataset-pipeline
+        wait: true
+        transmitFailed: true
+        inputs:
+          dataset: "{{ taskrun.value }}"
+          source_uri: "{{ outputs.find_latest_raw[taskrun.value].vars.source_uri }}"
+          trigger_type: schedule
+
+triggers:
+  - id: nightly
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 2 * * *"
+    description: Every night at 02:00 UTC.

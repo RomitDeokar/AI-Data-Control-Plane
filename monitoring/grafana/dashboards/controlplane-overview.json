@@ -1,0 +1,100 @@
+{
+  "title": "AI Data Control Plane — Overview",
+  "uid": "cp-overview",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Gateway Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(gateway_requests_total[5m]))",
+          "legendFormat": "{{path}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Gateway p95 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gateway_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Ingestion Events by Dataset",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (dataset, source) (rate(gateway_ingest_events_total[15m]))",
+          "legendFormat": "{{dataset}} ({{source}})"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Promotion Decisions (24h)",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "ControlPlane-Postgres" },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT decision AS metric, count(*) AS value FROM controlplane.promotions WHERE decided_at > now() - interval '24 hours' GROUP BY decision"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Quarantined Records (24h)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "ControlPlane-Postgres" },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT count(*) AS value FROM controlplane.quarantine WHERE created_at > now() - interval '24 hours'"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Dataset Versions by Status",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "ControlPlane-Postgres" },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dataset, status, count(*) AS versions, max(created_at) AS latest FROM controlplane.dataset_versions GROUP BY dataset, status ORDER BY dataset, status"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Quality Gate Pass Rate by Check (7d)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "ControlPlane-Postgres" },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT check_name, round(avg(CASE WHEN passed THEN 1 ELSE 0 END)::numeric, 3) AS pass_rate, count(*) AS runs FROM controlplane.quality_reports WHERE created_at > now() - interval '7 days' GROUP BY check_name ORDER BY pass_rate"
+        }
+      ]
+    }
+  ]
+}

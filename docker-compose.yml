@@ -1,0 +1,203 @@
+# ==============================================================================
+# AI Data Control Plane — Full Stack
+# ------------------------------------------------------------------------------
+# Services:
+#   kestra      → workflow orchestration engine (the control plane brain)
+#   postgres    → Kestra backend + control-plane metadata registry
+#   minio       → S3-compatible object storage (raw / staged / quarantine zones)
+#   qdrant      → vector database (staging + production collections)
+#   redis       → event bus (Redis Streams) + idempotency locks
+#   gateway     → FastAPI ingestion gateway (webhooks, uploads, run status API)
+#   prometheus  → metrics scraping
+#   grafana     → dashboards (auto-provisioned)
+# ==============================================================================
+
+services:
+  # ---------------------------------------------------------------- ORCHESTRATOR
+  kestra:
+    image: kestra/kestra:latest
+    container_name: cp-kestra
+    command: server standalone
+    user: "root"
+    environment:
+      KESTRA_CONFIGURATION: |
+        datasources:
+          postgres:
+            url: jdbc:postgresql://postgres:5432/kestra
+            driverClassName: org.postgresql.Driver
+            username: kestra
+            password: k3str4
+        kestra:
+          server:
+            basicAuth:
+              enabled: false
+          repository:
+            type: postgres
+          storage:
+            type: local
+            local:
+              basePath: "/app/storage"
+          queue:
+            type: postgres
+          tasks:
+            tmpDir:
+              path: /tmp/kestra-wd/tmp
+          url: http://localhost:8080/
+    ports:
+      - "8080:8080"
+    volumes:
+      - kestra-data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-wd:/tmp/kestra-wd
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/instance"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # ------------------------------------------------------------------- DATABASE
+  postgres:
+    image: postgres:16-alpine
+    container_name: cp-postgres
+    environment:
+      POSTGRES_USER: kestra
+      POSTGRES_PASSWORD: k3str4
+      POSTGRES_DB: kestra
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kestra"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------- OBJECT STORAGE
+  minio:
+    image: minio/minio:latest
+    container_name: cp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # bootstrap buckets: raw → staged → quarantine → artifacts
+  minio-init:
+    image: minio/mc:latest
+    container_name: cp-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/raw local/staged local/quarantine local/artifacts &&
+      echo '✅ buckets ready: raw, staged, quarantine, artifacts'
+      "
+
+  # ---------------------------------------------------------------- VECTOR DB
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: cp-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  # ----------------------------------------------------------------- EVENT BUS
+  redis:
+    image: redis:7-alpine
+    container_name: cp-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------- INGESTION GATEWAY
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: cp-gateway
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      KESTRA_URL: http://kestra:8080
+      DATABASE_URL: postgresql://kestra:k3str4@postgres:5432/kestra
+      QDRANT_URL: http://qdrant:6333
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------- MONITORING
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cp-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  kestra-data:
+  postgres-data:
+  minio-data:
+  qdrant-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:

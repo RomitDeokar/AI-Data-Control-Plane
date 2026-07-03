@@ -1,0 +1,32 @@
+[
+  {
+    "id": "D001",
+    "title": "Getting Started with Kestra",
+    "content": "Kestra is an event-driven orchestration platform. Define flows in YAML, trigger them via schedules, webhooks, or file events, and monitor every execution in the UI.",
+    "author": "platform-team"
+  },
+  {
+    "id": "D002",
+    "title": "Blue/Green Data Promotion",
+    "content": "Blue green deployment for data means staging a new dataset version in an isolated collection and atomically switching an alias when quality gates pass. Rollback is instant.",
+    "author": "platform-team"
+  },
+  {
+    "id": "D003",
+    "title": "Quality Gates Explained",
+    "content": "Quality gates check completeness, uniqueness, schema drift and embedding coverage before any dataset version reaches production traffic.",
+    "author": "data-eng"
+  },
+  {
+    "id": "D004",
+    "title": "Why Event-Driven Ingestion",
+    "content": "Event driven ingestion decouples producers from pipelines. Events queue in Redis Streams with idempotency keys and dead letter queues for poison messages.",
+    "author": "data-eng"
+  },
+  {
+    "id": "D005",
+    "title": "Vector Search Basics",
+    "content": "Semantic search embeds documents and queries into the same vector space. Cosine similarity in Qdrant retrieves the nearest neighbors through a stable production alias.",
+    "author": "search-team"
+  }
+]

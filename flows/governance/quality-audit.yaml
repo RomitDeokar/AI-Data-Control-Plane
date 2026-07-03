@@ -1,0 +1,113 @@
+# ==============================================================================
+# Governance — Daily Quality Audit
+# ------------------------------------------------------------------------------
+# Reads the metadata registry and produces a platform health report:
+#   * promotion success rate over the last 24h
+#   * quarantine volume per dataset
+#   * versions stuck in intermediate states
+# Demonstrates: SQL-driven governance flows + conditional alerting.
+# ==============================================================================
+
+id: quality-audit
+namespace: controlplane.governance
+
+description: |
+  Daily audit across the whole platform. Produces an auditable health report
+  artifact and raises an alert when the promotion failure rate exceeds 25%.
+
+labels:
+  team: platform
+  tier: governance
+
+tasks:
+  - id: audit
+    type: io.kestra.plugin.scripts.python.Script
+    description: Query the registry and compute platform KPIs.
+    containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    timeout: PT3M
+    env:
+      DATABASE_URL: "postgresql://kestra:k3str4@postgres:5432/kestra"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+    beforeCommands:
+      - pip install -q psycopg[binary] minio
+    script: |
+      import io, json, os
+      from datetime import datetime, timezone
+      import psycopg
+      from minio import Minio
+
+      conn = psycopg.connect(os.environ["DATABASE_URL"])
+
+      promotions = conn.execute("""
+          SELECT decision, count(*) FROM controlplane.promotions
+          WHERE decided_at > now() - interval '24 hours'
+          GROUP BY decision
+      """).fetchall()
+      decisions = {d: c for d, c in promotions}
+
+      quarantine = conn.execute("""
+          SELECT v.dataset, count(q.id)
+          FROM controlplane.quarantine q
+          JOIN controlplane.dataset_versions v ON v.version_id = q.version_id
+          WHERE q.created_at > now() - interval '24 hours'
+          GROUP BY v.dataset
+      """).fetchall()
+
+      stuck = conn.execute("""
+          SELECT version_id, status FROM controlplane.dataset_versions
+          WHERE status NOT IN ('promoted', 'rejected', 'rolled_back')
+            AND updated_at < now() - interval '2 hours'
+      """).fetchall()
+
+      promoted = decisions.get("promoted", 0)
+      rejected = decisions.get("rejected", 0)
+      total = promoted + rejected
+      failure_rate = (rejected / total) if total else 0.0
+
+      report = {
+          "generated_at": datetime.now(timezone.utc).isoformat(),
+          "window": "24h",
+          "promotions": {"promoted": promoted, "rejected": rejected,
+                         "failure_rate": round(failure_rate, 3)},
+          "quarantine_by_dataset": {ds: c for ds, c in quarantine},
+          "stuck_versions": [{"version_id": v, "status": s} for v, s in stuck],
+          "healthy": failure_rate <= 0.25 and not stuck,
+      }
+
+      client = Minio(os.environ["MINIO_ENDPOINT"],
+                     access_key=os.environ["MINIO_ACCESS_KEY"],
+                     secret_key=os.environ["MINIO_SECRET_KEY"], secure=False)
+      stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+      data = json.dumps(report, indent=2).encode()
+      client.put_object("artifacts", f"audits/{stamp}/platform_health.json",
+                        io.BytesIO(data), len(data), content_type="application/json")
+
+      print(json.dumps(report, indent=2))
+      print("::" + json.dumps({"outputs": {
+          "healthy": report["healthy"],
+          "failure_rate": failure_rate,
+      }}) + "::")
+
+  - id: check_health
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ outputs.audit.vars.healthy == false }}"
+    then:
+      - id: alert_unhealthy
+        type: io.kestra.plugin.core.log.Log
+        level: WARN
+        message: |
+          ⚠️ PLATFORM HEALTH DEGRADED
+          Promotion failure rate: {{ outputs.audit.vars.failure_rate }}
+          See artifacts bucket → audits/ for the full report.
+          (Swap this task for io.kestra.plugin.notifications.slack.SlackExecution in prod.)
+    else:
+      - id: healthy_log
+        type: io.kestra.plugin.core.log.Log
+        message: "✅ Platform healthy — promotion failure rate within budget."
+
+triggers:
+  - id: daily-audit
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 6 * * *"

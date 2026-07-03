@@ -6,9 +6,10 @@
 
 **Not another ETL pipeline. This is the control plane that governs many pipelines.**
 
+<!-- CI badge activates once you move ci/github-actions-ci.yml into .github/workflows/ (see ci/README.md — the automation token can't create workflow files, but you can). -->
 [![CI](https://github.com/RomitDeokar/AI-Data-Control-Plane/actions/workflows/ci.yml/badge.svg)](https://github.com/RomitDeokar/AI-Data-Control-Plane/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/tests-68%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-79%20passing-brightgreen)
 ![Orchestrator](https://img.shields.io/badge/orchestrator-Kestra-7d3cf5)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -59,8 +60,8 @@ This is exactly the kind of *developer infrastructure* platform, data, and MLOps
 - **⏪ Instant rollback** — zero-copy, sub-second revert to the previous promoted version.
 - **📒 Full audit trail** — Postgres ledger of every version, quality check, promotion, and quarantined record.
 - **📊 Observability** — Prometheus metrics + a provisioned Grafana dashboard + a live web console.
-- **🔁 Resilience** — per-task retries with exponential backoff, timeouts, idempotency keys, and a dead-letter queue.
-- **🧪 68 tests, CI, and a no-Docker E2E** — the whole lifecycle runs in-process in <1s for fast feedback.
+- **🔁 Resilience** — per-task retries with exponential backoff, timeouts, content-hash idempotency, a **durable event relay** (an accepted upload is re-driven even if Kestra was down at ingest time), and a dead-letter queue for poison events.
+- **🧪 79 tests, CI, and a no-Docker E2E** — the whole lifecycle runs in-process in <1s for fast feedback.
 
 ---
 
@@ -92,10 +93,15 @@ A premium, fully-interactive control-plane dashboard — **runs standalone with 
                                          │ dataset.ingested
                                          ▼
                               ┌──────────────────────┐
-                              │  Event Bus (Redis    │  idempotency + DLQ
-                              │  Streams)            │
+                              │  Event Bus (Redis    │  idempotency · dispatched
+                              │  Streams)            │  flag · relay · DLQ
                               └──────────┬───────────┘
-                                         │ webhook / poll
+                          trigger now ▲  │ dataset.ingested (dispatched=false)
+                                       │  ▼
+                              ┌──────────────────────┐
+                              │  Event Relay (cron)  │  re-drives stranded events
+                              │  controlplane.relay  │  → DLQ after N attempts
+                              └──────────┬───────────┘
                                          ▼
                     ┌────────────────────────────────────────┐
                     │        KESTRA — the orchestrator        │
@@ -225,6 +231,27 @@ The orchestration logic lives in thin **[Kestra YAML flows](flows/)**; all busin
 
 ---
 
+## 🛡️ Reliability guarantees
+
+The platform's central promise is: **once the gateway returns `accepted`, that upload will be processed exactly once — even if downstream infrastructure was mid-restart.** That guarantee is *engineered*, not assumed, from three cooperating mechanisms:
+
+1. **Front-door idempotency** — the gateway hashes the payload and takes a Redis `SET NX` lock, so a re-uploaded identical file is dropped (effective **exactly-once processing**).
+2. **Durable, dispatch-tracked events** — every event is written to a Redis Stream with a `dispatched` flag. The gateway triggers Kestra directly and flips the flag to `true` **only after Kestra accepts** it.
+3. **A scheduled relay backstop** — [`controlplane.relay`](controlplane/relay.py) (run every minute by [`event-relay.yaml`](flows/_system/event-relay.yaml)) claims any `dispatched=false` events via a consumer group, re-triggers the pipeline, ACKs successes, and dead-letters poison events after `EVENT_MAX_DELIVERIES` attempts.
+
+| Failure scenario | What happens | Data lost? |
+| --- | --- | --- |
+| Duplicate upload (same bytes) | Dropped at the front door by the `SET NX` idempotency lock | — (intended) |
+| Happy path | Gateway triggers Kestra, marks event `dispatched=true` | No |
+| **Kestra down at ingest** | Event stays `dispatched=false`; relay re-triggers it on the next tick | **No** |
+| Relay crashes mid-drain | Un-ACKed events are redelivered from the consumer-group backlog next tick | No |
+| Poison event (keeps failing) | Dead-lettered after `EVENT_MAX_DELIVERIES` tries; surfaced via `/events/stats` | Quarantined, not lost |
+| Gateway triggered Kestra but relay also sees the event | Relay notices the `dispatched` flag, ACKs and skips it (no double-run) | No |
+
+> This is the difference between *"the event is on the bus, something will pick it up"* (a hope) and a **named component with tests that proves the pickup happens** (`tests/test_relay.py`). The delivery semantics are **at-least-once delivery + exactly-once processing for identical payloads** — and the docs say so honestly rather than claiming unattainable exactly-once-everything.
+
+---
+
 ## 🧭 Repository layout
 
 ```
@@ -237,20 +264,21 @@ ai-data-control-plane/
 │  ├─ promotion/            #   blue/green promotion engine + rollback
 │  ├─ stores/               #   MinIO, Qdrant, Postgres adapters
 │  ├─ events.py             #   Redis Streams event bus (idempotency + DLQ)
+│  ├─ relay.py              #   durable relay: re-drives stranded events → Kestra
 │  ├─ models.py             #   domain models & version-id/fingerprint helpers
 │  └─ runner.py             #   CLI entry point Kestra tasks call
 ├─ flows/                   # Kestra YAML workflows
 │  ├─ ingestion/            #   flagship event-driven dataset-pipeline
 │  ├─ pipelines/            #   scheduled nightly rebuild (subflow reuse)
 │  ├─ governance/           #   emergency rollback + daily quality audit
-│  └─ _system/             #   namespace-file sync
+│  └─ _system/             #   namespace-file sync + event relay (cron backstop)
 ├─ services/gateway/        # FastAPI ingestion gateway + web console
 ├─ plugin/                  # custom Kestra plugin scaffold (Java) — advanced extra
 ├─ monitoring/              # Prometheus config + Grafana dashboards
 ├─ sql/init.sql             # Postgres registry schema
 ├─ sample_data/             # clean + intentionally-corrupted datasets
 ├─ scripts/e2e_local.py     # no-Docker end-to-end simulation
-├─ tests/                   # 68 unit/integration/flow-YAML tests
+├─ tests/                   # 79 unit/integration/flow-YAML tests
 ├─ docs/                    # architecture, demo, interview notes
 ├─ docker-compose.yml       # the full stack
 └─ Makefile                 # one-word commands for everything
@@ -263,7 +291,7 @@ ai-data-control-plane/
 Being honest about tradeoffs is what makes this read like *engineering* rather than *fanboyism* — and it's exactly what interviewers probe for.
 
 - **Why Kestra over Airflow?** Kestra keeps orchestration as declarative YAML with first-class triggers, retries, and artifacts, so reviewers who don't write Python can still read the pipeline. The tradeoff: it's a **JVM service that's heavier on resources**, and **YAML is awkward for deeply dynamic branching** — so all real logic lives in the Python `controlplane` library and the flows stay thin.
-- **Why an event bus in front of Kestra?** It decouples ingestion from orchestration. If Kestra is restarting, events queue on Redis instead of being lost; idempotency keys drop duplicate uploads; poison messages go to a **dead-letter queue**.
+- **Why an event bus *plus a relay* in front of Kestra?** It decouples ingestion from orchestration and makes the reliability claim *honest*. On the happy path the gateway triggers Kestra directly and marks the event `dispatched`. If Kestra is restarting, the event stays `dispatched=false` on the Redis Stream and a scheduled **relay** (`controlplane.relay`, wired by [`flows/_system/event-relay.yaml`](flows/_system/event-relay.yaml)) re-drives it once Kestra is reachable — so *an accepted upload is never silently lost*. Content-hash idempotency drops duplicate uploads at the front door (effective exactly-once **processing**); the stream + consumer-group give at-least-once **delivery**; poison messages are dead-lettered after `EVENT_MAX_DELIVERIES` attempts. See the [Reliability guarantees](#-reliability-guarantees) section for the full failure matrix.
 - **Why feature-hashing embeddings?** So the platform runs **anywhere with no model download, GPU, or API key**, and CI stays fast. The `HashingEmbedder` interface matches a real model — swap in SentenceTransformers/OpenAI by implementing `embed_batch()`. *The control plane doesn't care how vectors are made; it cares about coverage, dimensions, and safe promotion.*
 - **Why blue/green with aliases?** Promotion and rollback become **atomic and zero-copy**. A failed rebuild can never corrupt what production is serving, and rollback is sub-second.
 - **Why quarantine instead of failing the run?** Graceful degradation — one bad row shouldn't kill the batch. Bad rows are preserved with reasons for later inspection; the *aggregate* pass-rate is what the gate judges.
@@ -274,7 +302,7 @@ Being honest about tradeoffs is what makes this read like *engineering* rather t
 ## 🧪 Development
 
 ```bash
-make test        # run the 68 unit/integration tests
+make test        # run the 79 unit/integration tests
 make coverage    # tests + coverage report
 make lint        # ruff
 python scripts/e2e_local.py   # full lifecycle, no Docker

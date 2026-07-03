@@ -1,0 +1,51 @@
+# ==============================================================================
+# System — Event Relay (the safety net that makes "no event is ever lost" TRUE)
+# ------------------------------------------------------------------------------
+# The gateway normally triggers dataset-pipeline directly via its webhook. But
+# if Kestra was down/restarting at ingest time, the durable event on the Redis
+# Stream is marked dispatched=false. This flow polls the stream on a schedule,
+# re-triggers the pipeline for any undispatched events, ACKs successes, and
+# dead-letters poison messages after MAX_DELIVERIES attempts.
+#
+# Together with the gateway's single-shot idempotency lock this gives honest
+# at-least-once delivery with effective exactly-once *processing*:
+#   - duplicate uploads   → dropped at the front door (SET NX lock)
+#   - Kestra down         → event queued, relay re-triggers it later
+#   - relay crash mid-run → un-ACKed events are redelivered next tick
+#   - poison event        → moved to the DLQ after 3 delivery attempts
+# ==============================================================================
+
+id: event-relay
+namespace: controlplane.system
+
+description: |
+  Polls the Redis Streams event bus for dataset.ingested events that were not
+  dispatched to Kestra (dispatched=false — e.g. Kestra was restarting when the
+  gateway received the upload). Re-triggers the dataset-pipeline webhook for
+  each, ACKs on success, and reaps poison messages into the dead-letter queue.
+
+labels:
+  team: platform
+  tier: system
+
+tasks:
+  - id: relay_undispatched
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Consume queued events; re-trigger the pipeline for undispatched ones.
+    containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    timeout: PT4M
+    env:
+      REDIS_URL: "redis://redis:6379/0"
+      KESTRA_URL: "http://kestra:8080"
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q redis httpx minio psycopg[binary]
+    commands:
+      - python -m controlplane.relay
+
+triggers:
+  - id: every-minute
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "* * * * *"
+    description: Poll the event bus every minute for stranded events.

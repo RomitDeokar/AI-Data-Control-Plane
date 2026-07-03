@@ -31,10 +31,14 @@ def stub_infra(monkeypatch):
 
     class StubBus:
         published: list = []
+        dispatched: list = []
 
         def publish(self, event_type, payload):
             StubBus.published.append((event_type, payload))
             return "1-0"
+
+        def mark_dispatched(self, event_id):
+            StubBus.dispatched.append(event_id)
 
     monkeypatch.setattr(ingest_module, "ObjectStore", lambda: StubStore())
     monkeypatch.setattr(ingest_module, "EventBus", lambda: StubBus())
@@ -44,6 +48,7 @@ def stub_infra(monkeypatch):
         lambda dataset, source_uri, trigger_type: {"triggered": True, "execution_id": "test-exec"},
     )
     StubBus.published = []
+    StubBus.dispatched = []
     return StubBus
 
 

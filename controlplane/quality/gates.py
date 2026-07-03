@@ -26,6 +26,7 @@ class QualityGateRunner:
         uniqueness_min: float | None = None,
         embedding_coverage_min: float | None = None,
         min_records: int | None = None,
+        validation_pass_rate_min: float | None = None,
     ):
         self.completeness_min = completeness_min or settings.gate_completeness_min
         self.uniqueness_min = uniqueness_min or settings.gate_uniqueness_min
@@ -33,6 +34,9 @@ class QualityGateRunner:
             embedding_coverage_min or settings.gate_embedding_coverage_min
         )
         self.min_records = min_records or settings.gate_min_records
+        self.validation_pass_rate_min = (
+            validation_pass_rate_min or settings.gate_validation_pass_rate_min
+        )
 
     # ------------------------------------------------------------------ public
     def run_all(
@@ -109,26 +113,35 @@ class QualityGateRunner:
         if not records:
             return QualityCheckResult("uniqueness", True, 1.0, self.uniqueness_min)
         keys = [str(rec.get(key_field)) for rec in records if rec.get(key_field) is not None]
+        missing = len(records) - len(keys)
         if not keys:
             return QualityCheckResult(
                 "uniqueness", False, 0.0, self.uniqueness_min,
                 details={"error": f"no records contain key field '{key_field}'"},
             )
-        score = len(set(keys)) / len(keys)
+        # Records missing a key can never be uniquely identified, so they count
+        # against the score rather than being silently dropped from the ratio.
+        # This closes the "half the rows have no id but uniqueness still shows
+        # 100%" blind spot.
+        score = len(set(keys)) / len(records)
         return QualityCheckResult(
             check_name="uniqueness",
             passed=score >= self.uniqueness_min,
             score=score,
             threshold=self.uniqueness_min,
-            details={"unique_keys": len(set(keys)), "total_keys": len(keys)},
+            details={
+                "unique_keys": len(set(keys)),
+                "total_records": len(records),
+                "records_missing_key": missing,
+            },
         )
 
     def _gate_validation_pass_rate(self, pass_rate: float) -> QualityCheckResult:
         return QualityCheckResult(
             check_name="validation_pass_rate",
-            passed=pass_rate >= self.completeness_min,
+            passed=pass_rate >= self.validation_pass_rate_min,
             score=pass_rate,
-            threshold=self.completeness_min,
+            threshold=self.validation_pass_rate_min,
             details={},
         )
 

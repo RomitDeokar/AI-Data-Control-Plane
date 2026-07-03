@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:8000"]
+    metrics_path: /metrics
+
+  - job_name: kestra
+    static_configs:
+      - targets: ["kestra:8081"]
+    metrics_path: /prometheus
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

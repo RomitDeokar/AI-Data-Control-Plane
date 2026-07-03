@@ -1,0 +1,53 @@
+# ==============================================================================
+# System — Sync control-plane library into Kestra namespace files
+# ------------------------------------------------------------------------------
+# Kestra script tasks reference the `controlplane` Python package via
+# namespaceFiles. This flow pulls the package from the repo (or a mounted
+# path) into every namespace that runs pipelines, so flows and library code
+# stay in lockstep. Run it after every deploy (CI calls it via the API).
+# ==============================================================================
+
+id: sync-namespace-files
+namespace: controlplane.system
+
+description: |
+  Distributes the controlplane Python library to all pipeline namespaces as
+  Kestra namespace files. In CI this is triggered after each merge to main so
+  running flows always execute the latest tested library code.
+
+labels:
+  team: platform
+  tier: system
+
+inputs:
+  - id: git_url
+    type: STRING
+    defaults: https://github.com/RomitDeokar/AI-Data-Control-Plane.git
+  - id: git_branch
+    type: STRING
+    defaults: main
+
+tasks:
+  - id: clone_and_upload
+    type: io.kestra.plugin.core.flow.WorkingDirectory
+    tasks:
+      - id: clone
+        type: io.kestra.plugin.git.Clone
+        url: "{{ inputs.git_url }}"
+        branch: "{{ inputs.git_branch }}"
+
+      - id: upload_to_namespaces
+        type: io.kestra.plugin.core.namespace.UploadFiles
+        namespace: controlplane.ingestion
+        filesMap:
+          "controlplane": "controlplane"
+
+      - id: upload_to_governance
+        type: io.kestra.plugin.core.namespace.UploadFiles
+        namespace: controlplane.governance
+        filesMap:
+          "controlplane": "controlplane"
+
+  - id: done
+    type: io.kestra.plugin.core.log.Log
+    message: "✅ controlplane library synced to all pipeline namespaces."

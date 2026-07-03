@@ -1,0 +1,239 @@
+[
+  {
+    "id": "P0001",
+    "title": "Ergonomic Headphones Lite",
+    "category": "home",
+    "price": 119.36,
+    "description": "A ergonomic headphones designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P0002",
+    "title": "Ultra Headphones Pro",
+    "category": "electronics",
+    "price": 117.12,
+    "description": "A ultra headphones designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P0003",
+    "title": "Ultra Backpack X",
+    "category": "toys",
+    "price": 146.3,
+    "description": "A ultra backpack designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P0004",
+    "title": "Ultra Monitor Lite",
+    "category": "home",
+    "price": 115.49,
+    "description": "A ultra monitor designed for everyday use with premium build quality.",
+    "brand": "Zenith",
+    "in_stock": true
+  },
+  {
+    "id": "P0005",
+    "title": "Ergonomic Charger Pro",
+    "category": "sports",
+    "price": 425.26,
+    "description": "A ergonomic charger designed for everyday use with premium build quality.",
+    "brand": "Zenith",
+    "in_stock": true
+  },
+  {
+    "id": "P0006",
+    "title": "Eco Desk Pro",
+    "category": "books",
+    "price": 48.6,
+    "description": "A eco desk designed for everyday use with premium build quality.",
+    "brand": "Zenith",
+    "in_stock": true
+  },
+  {
+    "id": "P0007",
+    "title": "Smart Keyboard Pro",
+    "category": "home",
+    "price": 388.79,
+    "description": "A smart keyboard designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P0008",
+    "title": "Ergonomic Charger Lite",
+    "category": "books",
+    "price": 321.48,
+    "description": "A ergonomic charger designed for everyday use with premium build quality.",
+    "brand": "Zenith",
+    "in_stock": true
+  },
+  {
+    "id": "P0009",
+    "title": "Premium Monitor Max",
+    "category": "sports",
+    "price": 353.88,
+    "description": "A premium monitor designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P0010",
+    "title": "Smart Lamp X",
+    "category": "books",
+    "price": 142.26,
+    "description": "A smart lamp designed for everyday use with premium build quality.",
+    "brand": "Nova",
+    "in_stock": true
+  },
+  {
+    "id": "P9001",
+    "title": "",
+    "category": "electronics",
+    "price": 19.99
+  },
+  {
+    "id": "P9002",
+    "category": "home",
+    "price": 29.99
+  },
+  {
+    "id": "P9003",
+    "title": "Broken Widget",
+    "category": "toys",
+    "price": -5
+  },
+  {
+    "id": "P9004",
+    "title": "X",
+    "category": "sports",
+    "price": 9.99
+  },
+  {
+    "id": "P9005",
+    "title": "Type Error Gadget",
+    "category": "books",
+    "price": "free"
+  },
+  {
+    "id": "P0001",
+    "title": "Ergonomic Headphones Lite",
+    "category": "home",
+    "price": 119.36,
+    "description": "A ergonomic headphones designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P0002",
+    "title": "Ultra Headphones Pro",
+    "category": "electronics",
+    "price": 117.12,
+    "description": "A ultra headphones designed for everyday use with premium build quality.",
+    "brand": "Acme",
+    "in_stock": true
+  },
+  {
+    "id": "P9500",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9501",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9502",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9503",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9504",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9505",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9506",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9507",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9508",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9509",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9510",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9511",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9512",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9513",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9514",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9515",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9516",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9517",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9518",
+    "category": "misc",
+    "price": 10.0
+  },
+  {
+    "id": "P9519",
+    "category": "misc",
+    "price": 10.0
+  }
+]

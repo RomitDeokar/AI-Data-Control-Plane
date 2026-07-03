@@ -1,0 +1,246 @@
+# ==============================================================================
+# FLAGSHIP FLOW — Event-Driven Dataset Pipeline
+# ------------------------------------------------------------------------------
+# Triggered by the gateway (webhook) whenever new data lands in the raw zone.
+#
+#   ingest → validate ──┬─ enrich ─┐
+#                       │          ├─→ embed → quality gates → promote/reject
+#                       └─ profile ┘                                │
+#                                                          alerts + artifacts
+#
+# Demonstrates: webhook triggers, working-directory task chaining, parallel
+# branches, retries with exponential backoff, timeouts, conditional branching,
+# error handling, and machine-readable outputs.
+# ==============================================================================
+
+id: dataset-pipeline
+namespace: controlplane.ingestion
+
+description: |
+  Event-driven ingestion pipeline: validates, enriches, embeds, quality-gates
+  and (if gates pass) promotes a new dataset version to production via
+  blue/green alias switching. Failed records are quarantined, failed versions
+  are rejected, and every decision is written to the audit registry.
+
+labels:
+  team: platform
+  tier: production
+  pipeline: generic-dataset
+
+inputs:
+  - id: dataset
+    type: STRING
+    defaults: products
+    description: Logical dataset name (products, documents, ...)
+  - id: source_uri
+    type: STRING
+    defaults: ""
+    description: s3://raw/... object to process
+  - id: trigger_type
+    type: STRING
+    defaults: manual
+
+variables:
+  # Resolve parameters from either the webhook body (event trigger) or inputs (manual run)
+  dataset: "{{ trigger.body.dataset ?? inputs.dataset }}"
+  source_uri: "{{ trigger.body.source_uri ?? inputs.source_uri }}"
+  trigger_type: "{{ trigger.body.trigger_type ?? inputs.trigger_type }}"
+  runner_image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  common_env:
+    DATABASE_URL: "postgresql://kestra:k3str4@postgres:5432/kestra"
+    MINIO_ENDPOINT: "minio:9000"
+    MINIO_ACCESS_KEY: "minioadmin"
+    MINIO_SECRET_KEY: "minioadmin"
+    QDRANT_URL: "http://qdrant:6333"
+    REDIS_URL: "redis://redis:6379/0"
+
+tasks:
+  # ---------------------------------------------------------------- 1. INGEST
+  - id: ingest
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Pull raw object, register a new dataset version, stage records.
+    containerImage: "{{ vars.runner_image }}"
+    env: "{{ vars.common_env }}"
+    timeout: PT5M
+    retry:
+      type: exponential
+      interval: PT10S
+      maxInterval: PT2M
+      maxAttempt: 3
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q minio psycopg[binary] httpx redis
+    commands:
+      - >
+        python -m controlplane.runner ingest
+        --dataset "{{ render(vars.dataset) }}"
+        --source-uri "{{ render(vars.source_uri) }}"
+        --trigger-type "{{ render(vars.trigger_type) }}"
+        --pipeline dataset-pipeline
+
+  # -------------------------------------------------------------- 2. VALIDATE
+  - id: validate
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Schema validation + drift detection. Bad records → quarantine.
+    containerImage: "{{ vars.runner_image }}"
+    env: "{{ vars.common_env }}"
+    timeout: PT5M
+    retry:
+      type: exponential
+      interval: PT10S
+      maxAttempt: 3
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q minio psycopg[binary] httpx redis
+    commands:
+      - >
+        python -m controlplane.runner validate
+        --version-id "{{ outputs.ingest.vars.version_id }}"
+
+  # --------------------------------------------- 3. PARALLEL: ENRICH + PROFILE
+  - id: parallel_processing
+    type: io.kestra.plugin.core.flow.Parallel
+    description: Enrichment and data profiling run concurrently.
+    tasks:
+      - id: enrich
+        type: io.kestra.plugin.scripts.python.Commands
+        description: Normalize text, dedupe, derive metadata + lineage tags.
+        containerImage: "{{ vars.runner_image }}"
+        env: "{{ vars.common_env }}"
+        timeout: PT5M
+        retry:
+          type: exponential
+          interval: PT10S
+          maxAttempt: 3
+        namespaceFiles:
+          enabled: true
+        beforeCommands:
+          - pip install -q minio psycopg[binary] httpx redis
+        commands:
+          - >
+            python -m controlplane.runner enrich
+            --version-id "{{ outputs.ingest.vars.version_id }}"
+
+      - id: profile
+        type: io.kestra.plugin.scripts.python.Script
+        description: Lightweight statistical profile artifact (field fill rates).
+        containerImage: "{{ vars.runner_image }}"
+        env: "{{ vars.common_env }}"
+        timeout: PT3M
+        beforeCommands:
+          - pip install -q minio
+        script: |
+          import json, os
+          from collections import Counter
+          from minio import Minio
+
+          client = Minio(os.environ["MINIO_ENDPOINT"],
+                         access_key=os.environ["MINIO_ACCESS_KEY"],
+                         secret_key=os.environ["MINIO_SECRET_KEY"], secure=False)
+          version_id = "{{ outputs.ingest.vars.version_id }}"
+          obj = client.get_object("staged", f"{version_id}/records.jsonl")
+          records = [json.loads(l) for l in obj.read().decode().splitlines() if l.strip()]
+
+          fill = Counter()
+          for rec in records:
+              for key, value in rec.items():
+                  if value not in (None, "", []):
+                      fill[key] += 1
+          profile = {
+              "version_id": version_id,
+              "records": len(records),
+              "field_fill_rates": {
+                  k: round(v / len(records), 3) for k, v in sorted(fill.items())
+              } if records else {},
+          }
+          import io as _io
+          data = json.dumps(profile, indent=2).encode()
+          client.put_object("artifacts", f"{version_id}/profile.json",
+                            _io.BytesIO(data), len(data), content_type="application/json")
+          print(json.dumps(profile, indent=2))
+
+  # ------------------------------------------------------------------ 4. EMBED
+  - id: embed
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Generate embeddings for all staged records.
+    containerImage: "{{ vars.runner_image }}"
+    env: "{{ vars.common_env }}"
+    timeout: PT10M
+    retry:
+      type: exponential
+      interval: PT15S
+      maxAttempt: 3
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q minio psycopg[binary] httpx redis
+    commands:
+      - >
+        python -m controlplane.runner embed
+        --version-id "{{ outputs.ingest.vars.version_id }}"
+
+  # --------------------------------------------------------- 5. QUALITY GATES
+  - id: quality_gates
+    type: io.kestra.plugin.scripts.python.Commands
+    description: >
+      Run the full gate suite: min-records, completeness, uniqueness,
+      validation pass-rate, embedding coverage, schema drift.
+    containerImage: "{{ vars.runner_image }}"
+    env: "{{ vars.common_env }}"
+    timeout: PT5M
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q minio psycopg[binary] httpx redis
+    commands:
+      - >
+        python -m controlplane.runner gate
+        --version-id "{{ outputs.ingest.vars.version_id }}"
+
+  # ---------------------------------------------------------------- 6. PROMOTE
+  - id: promote
+    type: io.kestra.plugin.scripts.python.Commands
+    description: >
+      Blue/green promotion: stage vectors into a version collection, then
+      atomically switch the prod alias — only if every gate passed.
+      Rejected versions never touch production.
+    containerImage: "{{ vars.runner_image }}"
+    env: "{{ vars.common_env }}"
+    timeout: PT10M
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q minio psycopg[binary] httpx redis
+    commands:
+      - >
+        python -m controlplane.runner promote
+        --version-id "{{ outputs.ingest.vars.version_id }}"
+
+  # ---------------------------------------------------------------- 7. SUMMARY
+  - id: run_summary
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ✅ dataset-pipeline finished
+      dataset      : {{ render(vars.dataset) }}
+      version      : {{ outputs.ingest.vars.version_id }}
+      trigger      : {{ render(vars.trigger_type) }}
+      execution    : {{ execution.id }}
+
+errors:
+  - id: alert_on_failure
+    type: io.kestra.plugin.core.log.Log
+    level: ERROR
+    message: |
+      🚨 dataset-pipeline FAILED
+      dataset   : {{ render(vars.dataset) }}
+      execution : {{ execution.id }}
+      Check quarantine bucket + quality reports for details.
+      (In production, replace this with a Slack/PagerDuty notification task.)
+
+triggers:
+  - id: gateway-webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: controlplane-webhook-key
+    description: Fired by the ingestion gateway when new data lands in the raw zone.

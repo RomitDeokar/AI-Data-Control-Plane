@@ -1,0 +1,53 @@
+plugins {
+    id 'java-library'
+    id 'idea'
+}
+
+group = 'io.controlplane.kestra'
+version = '1.0.0'
+description = 'Custom Kestra plugin for the AI Data Control Plane — a reusable PromotionGate task.'
+
+sourceCompatibility = JavaVersion.VERSION_21
+targetCompatibility = JavaVersion.VERSION_21
+
+repositories {
+    mavenCentral()
+    maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
+}
+
+// Align with the Kestra version you run in docker-compose (kestra/kestra:latest).
+def kestraVersion = "0.20.0"
+def lombokVersion = "1.18.34"
+
+dependencies {
+    // Kestra core is provided by the runtime — compileOnly keeps the jar slim.
+    compileOnly group: "io.kestra", name: "core", version: kestraVersion
+    annotationProcessor group: "io.kestra", name: "processor", version: kestraVersion
+
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    // Tests run against the real Kestra test harness.
+    testImplementation group: "io.kestra", name: "core", version: kestraVersion
+    testImplementation group: "io.kestra", name: "tests", version: kestraVersion
+    testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
+    testImplementation "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Kestra discovers plugins via this manifest attribute.
+jar {
+    manifest {
+        attributes(
+            "X-Kestra-Name": "plugin-controlplane",
+            "X-Kestra-Title": "AI Data Control Plane",
+            "X-Kestra-Group": "io.controlplane.kestra.plugin",
+            "X-Kestra-Version": project.version,
+            "X-Kestra-Description": project.description
+        )
+    }
+}

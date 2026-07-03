@@ -1,0 +1,56 @@
+# ==============================================================================
+# Governance — Emergency Rollback
+# ------------------------------------------------------------------------------
+# Manually-triggered (or API-triggered) flow that re-points a dataset's prod
+# alias to the previous promoted version. Zero-copy, instant, fully audited.
+# ==============================================================================
+
+id: emergency-rollback
+namespace: controlplane.governance
+
+description: |
+  Instant blue/green rollback for a dataset. Because every promoted version
+  keeps its own vector collection, rollback is just an alias switch — no data
+  movement, no re-processing, sub-second cutover.
+
+labels:
+  team: platform
+  tier: governance
+
+inputs:
+  - id: dataset
+    type: STRING
+    defaults: products
+  - id: reason
+    type: STRING
+    defaults: "manual emergency rollback"
+
+tasks:
+  - id: rollback
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Re-point {dataset}__prod alias to the previous promoted version.
+    containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    timeout: PT2M
+    env:
+      DATABASE_URL: "postgresql://kestra:k3str4@postgres:5432/kestra"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      QDRANT_URL: "http://qdrant:6333"
+      REDIS_URL: "redis://redis:6379/0"
+    namespaceFiles:
+      enabled: true
+    beforeCommands:
+      - pip install -q minio psycopg[binary] httpx redis
+    commands:
+      - >
+        python -m controlplane.runner rollback
+        --dataset "{{ inputs.dataset }}"
+        --reason "{{ inputs.reason }}"
+
+  - id: confirm
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      🔄 Rollback executed for dataset '{{ inputs.dataset }}'
+      Reason: {{ inputs.reason }}
+      The promotion ledger has a full audit record of this action.

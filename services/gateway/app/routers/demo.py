@@ -17,7 +17,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from app.security import require_api_key
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from controlplane.demo import DEMO_SCHEMAS, demo_engine
@@ -123,7 +124,7 @@ def search(dataset: str, q: str, limit: int = 5) -> dict[str, Any]:
     return demo_engine.search(dataset, q, limit=min(limit, 25))
 
 
-@router.post("/rollback/{dataset}")
+@router.post("/rollback/{dataset}", dependencies=[Depends(require_api_key)])
 def rollback(dataset: str, reason: str = "console rollback") -> dict[str, Any]:
     result = demo_engine.rollback(dataset, reason=reason)
     if result.get("decision") == "rollback_failed":
@@ -131,7 +132,7 @@ def rollback(dataset: str, reason: str = "console rollback") -> dict[str, Any]:
     return result
 
 
-@router.post("/reset")
+@router.post("/reset", dependencies=[Depends(require_api_key)])
 def reset() -> dict[str, Any]:
     demo_engine.reset()
     return {"status": "reset"}

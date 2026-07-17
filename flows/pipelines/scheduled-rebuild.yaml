@@ -33,14 +33,13 @@ tasks:
       - id: find_latest_raw
         type: io.kestra.plugin.scripts.python.Script
         description: Locate the newest raw object for this dataset.
-        containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+        # Baked runner image (issue #22): deps + controlplane lib pre-installed.
+        containerImage: control-plane/runner:1.0.0
         timeout: PT2M
         env:
           MINIO_ENDPOINT: "minio:9000"
           MINIO_ACCESS_KEY: "minioadmin"
           MINIO_SECRET_KEY: "minioadmin"
-        beforeCommands:
-          - pip install -q minio
         script: |
           import json, os
           from minio import Minio

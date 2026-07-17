@@ -2,7 +2,7 @@
 # AI Data Control Plane — Developer Commands
 # ==============================================================================
 
-.PHONY: help up down logs test coverage lint demo demo-bad demo-docs search rollback status clean flows
+.PHONY: help up down logs test coverage lint typecheck runner-image demo demo-bad demo-docs search rollback status clean flows
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -44,6 +44,12 @@ coverage: ## Run tests with coverage report
 
 lint: ## Lint with ruff
 	ruff check controlplane/ services/ tests/
+
+typecheck: ## Static type-check with mypy
+	mypy
+
+runner-image: ## Build the pinned Kestra task-runner image (deps + controlplane baked in)
+	docker build -f services/runner/Dockerfile -t control-plane/runner:1.0.0 .
 
 # ---------------------------------------------------------------------- demo
 demo: ## Ingest the clean product dataset (should PASS gates and promote)

@@ -24,6 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from controlplane.config import settings
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -41,12 +43,19 @@ app = FastAPI(
     description="Event-driven ingestion gateway for the AI Data Control Plane.",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS is locked down by default: with no CORS_ALLOW_ORIGINS configured the
+# gateway is same-origin only (the console is served from the same origin, so it
+# still works). Set CORS_ALLOW_ORIGINS to an explicit allowlist — or "*" for a
+# throwaway public demo — to opt into cross-origin access.
+_cors_origins = settings.cors_origins_list
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials="*" not in _cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.middleware("http")
@@ -55,8 +64,17 @@ async def metrics_middleware(request: Request, call_next):
     response = await call_next(request)
     elapsed = time.perf_counter() - start
     path = request.url.path
-    # avoid label cardinality explosion from dynamic path segments
-    for prefix in ("/versions/", "/rollback/", "/search/"):
+    # Avoid label cardinality explosion from dynamic path segments. Every route
+    # with a path parameter — including the /demo/* twins — is normalised to a
+    # single template so Prometheus labels stay bounded.
+    for prefix in (
+        "/versions/",
+        "/rollback/",
+        "/search/",
+        "/demo/versions/",
+        "/demo/rollback/",
+        "/demo/search/",
+    ):
         if path.startswith(prefix):
             path = prefix + "{param}"
             break

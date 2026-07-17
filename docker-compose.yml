@@ -15,7 +15,9 @@
 services:
   # ---------------------------------------------------------------- ORCHESTRATOR
   kestra:
-    image: kestra/kestra:latest
+    # Pinned version (not :latest) so a fresh `make up` months from now is
+    # reproducible and can't be broken by an upstream release.
+    image: kestra/kestra:v0.20.8
     container_name: cp-kestra
     command: server standalone
     user: "root"
@@ -26,7 +28,7 @@ services:
             url: jdbc:postgresql://postgres:5432/kestra
             driverClassName: org.postgresql.Driver
             username: kestra
-            password: k3str4
+            password: ${POSTGRES_PASSWORD:-k3str4}
         kestra:
           server:
             basicAuth:
@@ -67,9 +69,9 @@ services:
     image: postgres:16-alpine
     container_name: cp-postgres
     environment:
-      POSTGRES_USER: kestra
-      POSTGRES_PASSWORD: k3str4
-      POSTGRES_DB: kestra
+      POSTGRES_USER: ${POSTGRES_USER:-kestra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-k3str4}
+      POSTGRES_DB: ${POSTGRES_DB:-kestra}
     ports:
       - "5432:5432"
     volumes:
@@ -83,12 +85,12 @@ services:
 
   # ------------------------------------------------------------- OBJECT STORAGE
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
     container_name: cp-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -102,21 +104,24 @@ services:
 
   # bootstrap buckets: raw → staged → quarantine → artifacts
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2024-09-16T17-43-14Z
     container_name: cp-minio-init
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
       mc mb -p local/raw local/staged local/quarantine local/artifacts &&
-      echo '✅ buckets ready: raw, staged, quarantine, artifacts'
+      echo 'buckets ready: raw, staged, quarantine, artifacts'
       "
 
   # ---------------------------------------------------------------- VECTOR DB
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.11.3
     container_name: cp-qdrant
     ports:
       - "6333:6333"
@@ -148,11 +153,15 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       KESTRA_URL: http://kestra:8080
-      DATABASE_URL: postgresql://kestra:k3str4@postgres:5432/kestra
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kestra}:${POSTGRES_PASSWORD:-k3str4}@postgres:5432/${POSTGRES_DB:-kestra}
       QDRANT_URL: http://qdrant:6333
+      # Optional: require an API key on mutating endpoints (empty = open demo).
+      CONTROLPLANE_API_KEY: ${CONTROLPLANE_API_KEY:-}
+      CONTROLPLANE_WEBHOOK_KEY: ${CONTROLPLANE_WEBHOOK_KEY:-controlplane-webhook-key}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -168,7 +177,7 @@ services:
 
   # ---------------------------------------------------------------- MONITORING
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.54.1
     container_name: cp-prometheus
     ports:
       - "9090:9090"
@@ -177,14 +186,16 @@ services:
       - prometheus-data:/prometheus
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.2.0
     container_name: cp-grafana
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Anonymous access is OFF by default — dashboards require a login. Flip
+      # GF_AUTH_ANONYMOUS_ENABLED=true only for a throwaway read-only demo.
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_ANONYMOUS:-false}"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

@@ -32,15 +32,14 @@ tasks:
   - id: relay_undispatched
     type: io.kestra.plugin.scripts.python.Commands
     description: Consume queued events; re-trigger the pipeline for undispatched ones.
-    containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    # Baked runner image (issue #22): deps + controlplane lib pre-installed.
+    containerImage: control-plane/runner:1.0.0
     timeout: PT4M
     env:
       REDIS_URL: "redis://redis:6379/0"
       KESTRA_URL: "http://kestra:8080"
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q redis httpx minio psycopg[binary]
     commands:
       - python -m controlplane.relay
 

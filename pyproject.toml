@@ -8,6 +8,7 @@ dependencies = [
     "redis>=5.0",
     "minio>=7.2",
     "psycopg[binary]>=3.2",
+    "psycopg_pool>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,7 @@ dev = [
     "python-multipart>=0.0.9",
     "prometheus-client>=0.20",
     "uvicorn>=0.30",
+    "mypy>=1.11",
 ]
 
 [build-system]
@@ -44,3 +46,17 @@ ignore = ["E501"]
 
 [tool.coverage.run]
 source = ["controlplane"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["controlplane"]
+ignore_missing_imports = true      # third-party libs (qdrant, minio, redis) ship no stubs
+follow_imports = "silent"
+warn_redundant_casts = true
+warn_unused_ignores = false
+no_implicit_optional = true
+check_untyped_defs = true
+# Pragmatic gate: catch obvious type errors without demanding full annotation
+# coverage across an infra-heavy codebase.
+disallow_untyped_defs = false
+disallow_incomplete_defs = false

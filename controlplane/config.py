@@ -19,6 +19,11 @@ class Settings:
         )
     )
     redis_url: str = field(default_factory=lambda: _env("REDIS_URL", "redis://localhost:6379/0"))
+    # Max connections held open by the shared Postgres pool.
+    db_pool_max_size: int = field(default_factory=lambda: int(_env("DB_POOL_MAX_SIZE", "5")))
+    # Seconds to wait for a connection before giving up (keeps health checks
+    # fast when Postgres is unreachable instead of blocking on reconnects).
+    db_connect_timeout: int = field(default_factory=lambda: int(_env("DB_CONNECT_TIMEOUT", "3")))
     minio_endpoint: str = field(default_factory=lambda: _env("MINIO_ENDPOINT", "localhost:9000"))
     minio_access_key: str = field(default_factory=lambda: _env("MINIO_ACCESS_KEY", "minioadmin"))
     minio_secret_key: str = field(default_factory=lambda: _env("MINIO_SECRET_KEY", "minioadmin"))
@@ -46,6 +51,24 @@ class Settings:
     )
     # How many stranded events the relay drains per tick.
     relay_batch_size: int = field(default_factory=lambda: int(_env("RELAY_BATCH_SIZE", "50")))
+    # How long a per-event dispatch marker lives (seconds). Each dispatched
+    # event gets its own key with this TTL, so markers expire individually
+    # rather than all at once (see events.mark_dispatched).
+    dispatch_ttl_seconds: int = field(
+        default_factory=lambda: int(_env("DISPATCH_TTL_SECONDS", "86400"))
+    )
+
+    # --- security --------------------------------------------------------------
+    # Shared secret for the Kestra webhook trigger. Referenced by the gateway,
+    # the relay, and the flow YAML so the key lives in exactly one place.
+    webhook_key: str = field(
+        default_factory=lambda: _env("CONTROLPLANE_WEBHOOK_KEY", "controlplane-webhook-key")
+    )
+    # Optional API key gating the mutating gateway endpoints. Empty = open
+    # (demo mode); any value requires the `X-API-Key` header on writes.
+    api_key: str = field(default_factory=lambda: _env("CONTROLPLANE_API_KEY", ""))
+    # Comma-separated CORS allowlist. Empty = same-origin only (no CORS header).
+    cors_allow_origins: str = field(default_factory=lambda: _env("CORS_ALLOW_ORIGINS", ""))
 
     # --- embeddings ------------------------------------------------------------
     embedding_dim: int = field(default_factory=lambda: int(_env("EMBEDDING_DIM", "256")))
@@ -70,6 +93,12 @@ class Settings:
     gate_validation_pass_rate_min: float = field(
         default_factory=lambda: float(_env("GATE_VALIDATION_PASS_RATE_MIN", "0.95"))
     )
+
+    # --- derived helpers -------------------------------------------------------
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse the comma-separated CORS allowlist into a clean list."""
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
 
 
 settings = Settings()

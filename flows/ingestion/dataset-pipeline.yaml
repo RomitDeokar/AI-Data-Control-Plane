@@ -45,14 +45,23 @@ variables:
   dataset: "{{ trigger.body.dataset ?? inputs.dataset }}"
   source_uri: "{{ trigger.body.source_uri ?? inputs.source_uri }}"
   trigger_type: "{{ trigger.body.trigger_type ?? inputs.trigger_type }}"
-  runner_image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  # Runner image bakes the control-plane library + its Python deps (issue #22),
+  # so tasks no longer pip-install on every run. Build it with:
+  #   docker build -f services/runner/Dockerfile -t control-plane/runner:1.0.0 .
+  # and push to a registry your Kestra workers can pull from. Override per
+  # environment via the KESTRA__... env or a flow input if needed.
+  runner_image: control-plane/runner:1.0.0
+  # Credentials come from Kestra secrets, NOT hardcoded literals. Set them once
+  # (KESTRA__SECRET__DATABASE_URL, ...) — see docs/DEMO.md. Each secret() call
+  # falls back to the local-dev default only when the secret is absent, so a
+  # fresh `make up` still works without any secret configuration.
   common_env:
-    DATABASE_URL: "postgresql://kestra:k3str4@postgres:5432/kestra"
-    MINIO_ENDPOINT: "minio:9000"
-    MINIO_ACCESS_KEY: "minioadmin"
-    MINIO_SECRET_KEY: "minioadmin"
-    QDRANT_URL: "http://qdrant:6333"
-    REDIS_URL: "redis://redis:6379/0"
+    DATABASE_URL: "{{ secret('DATABASE_URL') ?? 'postgresql://kestra:k3str4@postgres:5432/kestra' }}"
+    MINIO_ENDPOINT: "{{ secret('MINIO_ENDPOINT') ?? 'minio:9000' }}"
+    MINIO_ACCESS_KEY: "{{ secret('MINIO_ACCESS_KEY') ?? 'minioadmin' }}"
+    MINIO_SECRET_KEY: "{{ secret('MINIO_SECRET_KEY') ?? 'minioadmin' }}"
+    QDRANT_URL: "{{ secret('QDRANT_URL') ?? 'http://qdrant:6333' }}"
+    REDIS_URL: "{{ secret('REDIS_URL') ?? 'redis://redis:6379/0' }}"
 
 tasks:
   # ---------------------------------------------------------------- 1. INGEST
@@ -69,8 +78,6 @@ tasks:
       maxAttempt: 3
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q minio psycopg[binary] httpx redis
     commands:
       - >
         python -m controlplane.runner ingest
@@ -92,8 +99,6 @@ tasks:
       maxAttempt: 3
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q minio psycopg[binary] httpx redis
     commands:
       - >
         python -m controlplane.runner validate
@@ -116,8 +121,6 @@ tasks:
           maxAttempt: 3
         namespaceFiles:
           enabled: true
-        beforeCommands:
-          - pip install -q minio psycopg[binary] httpx redis
         commands:
           - >
             python -m controlplane.runner enrich
@@ -129,8 +132,6 @@ tasks:
         containerImage: "{{ vars.runner_image }}"
         env: "{{ vars.common_env }}"
         timeout: PT3M
-        beforeCommands:
-          - pip install -q minio
         script: |
           import json, os
           from collections import Counter
@@ -174,8 +175,6 @@ tasks:
       maxAttempt: 3
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q minio psycopg[binary] httpx redis
     commands:
       - >
         python -m controlplane.runner embed
@@ -192,8 +191,6 @@ tasks:
     timeout: PT5M
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q minio psycopg[binary] httpx redis
     commands:
       - >
         python -m controlplane.runner gate
@@ -211,8 +208,6 @@ tasks:
     timeout: PT10M
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q minio psycopg[binary] httpx redis
     commands:
       - >
         python -m controlplane.runner promote

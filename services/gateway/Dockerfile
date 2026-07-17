@@ -18,4 +18,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 \
     CMD curl -f http://localhost:8000/healthz || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# NOTE: pinned to a single worker on purpose. The in-memory demo engine
+# (controlplane.demo.demo_engine) keeps all demo state in one process; running
+# multiple workers would give each its own copy and surface inconsistent
+# stats/versions. Scale horizontally only after moving demo state to Redis.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

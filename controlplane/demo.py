@@ -31,21 +31,12 @@ from controlplane.models import (
 )
 from controlplane.promotion import PromotionEngine
 from controlplane.quality import QualityGateRunner
+from controlplane.schemas import DATASET_SCHEMAS, schema_for
 from controlplane.validation import SchemaValidator, detect_drift
 
-# Dataset contracts (mirror controlplane.runner.DEFAULT_SCHEMAS).
-DEMO_SCHEMAS: dict[str, dict[str, Any]] = {
-    "products": {
-        "required": ["id", "title", "category", "price"],
-        "types": {"id": "str", "title": "str", "category": "str", "price": "number"},
-        "constraints": {"price": {"min": 0}, "title": {"min_length": 2}},
-    },
-    "documents": {
-        "required": ["id", "title", "content"],
-        "types": {"id": "str", "title": "str", "content": "str"},
-        "constraints": {"content": {"min_length": 10}},
-    },
-}
+# Dataset contracts now come from controlplane.schemas (single source of truth).
+# Re-exported under the historical name the demo router imports.
+DEMO_SCHEMAS: dict[str, dict[str, Any]] = DATASET_SCHEMAS
 
 
 # --------------------------------------------------------------------------- fakes
@@ -133,16 +124,36 @@ class _MemRegistry:
                 return v.get("schema_hash")
         return None
 
+    def get_promotion_history(self, dataset: str, limit: int = 50) -> list[str]:
+        """Promoted version ids for ``dataset``, newest first, by ledger order.
+
+        Mirrors the Postgres registry: ordering follows the append-only
+        promotion ledger (``self.promotions``), not the version mutation order,
+        so rollback is deterministic.
+        """
+        seen: set[str] = set()
+        history: list[str] = []
+        for entry in reversed(self.promotions):
+            if entry.get("decision") != "promoted":
+                continue
+            vid = entry.get("version_id")
+            if not vid:
+                continue
+            row = self.versions.get(vid, {})
+            if row.get("dataset") != dataset or vid in seen:
+                continue
+            seen.add(vid)
+            history.append(vid)
+            if len(history) >= limit:
+                break
+        return history
+
     def get_previous_promoted(self, dataset: str, exclude_current: str | None) -> str | None:
         exclude = (exclude_current or "").replace(f"{dataset}__", "", 1)
-        promoted = [
-            v["version_id"]
-            for vid in self.order
-            if (v := self.versions[vid])["dataset"] == dataset
-            and v["status"] == "promoted"
-            and v["version_id"] != exclude
-        ]
-        return promoted[-1] if promoted else None
+        for vid in self.get_promotion_history(dataset):
+            if vid != exclude:
+                return vid
+        return None
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -166,10 +177,24 @@ class DemoEngine:
     """Thread-safe, in-process control plane for the interactive console."""
 
     def __init__(self) -> None:
+        # The lock is created ONCE and never replaced — reset() clears state via
+        # _clear_state() while holding this same lock, so a thread that grabbed a
+        # reference to it mid-reset still serialises correctly.
         self._lock = threading.Lock()
+        self._clear_state()
+
+    def _clear_state(self) -> None:
+        """(Re)initialise all mutable state. Never touches ``self._lock``.
+
+        Called by ``__init__`` and by ``reset()`` (the latter under the lock).
+        Keeping the lock object stable across a reset avoids the race where a
+        thread holds the *old* lock while a new one is installed.
+        """
         self.vectors = _MemVectorStore()
         self.registry = _MemRegistry()
-        self.embedder = HashingEmbedder(dim=settings.embedding_dim, model_name=settings.embedding_model)
+        self.embedder = HashingEmbedder(
+            dim=settings.embedding_dim, model_name=settings.embedding_model
+        )
         self.engine = PromotionEngine(vector_store=self.vectors, registry=self.registry)
         self.timeline: list[dict[str, Any]] = []
 
@@ -184,7 +209,7 @@ class DemoEngine:
         """
         with self._lock:
             events: list[StageEvent] = []
-            schema = DEMO_SCHEMAS.get(dataset, {"required": ["id"], "types": {}, "constraints": {}})
+            schema = schema_for(dataset)
             version_id = new_version_id(dataset)
 
             # 1. INGEST
@@ -297,10 +322,18 @@ class DemoEngine:
     def search(self, dataset: str, query: str, limit: int = 5) -> dict[str, Any]:
         vector = self.embedder.embed_text(query)
         alias = f"{dataset}__prod"
-        serving = self.vectors.get_alias_target(alias)
-        if not serving:
-            return {"dataset": dataset, "query": query, "serving_collection": None, "results": []}
-        hits = self.vectors.search(alias, vector, limit=limit)
+        # Read under the lock so a concurrent run_pipeline() can't mutate the
+        # collection dicts out from under the cosine scan mid-iteration.
+        with self._lock:
+            serving = self.vectors.get_alias_target(alias)
+            if not serving:
+                return {
+                    "dataset": dataset,
+                    "query": query,
+                    "serving_collection": None,
+                    "results": [],
+                }
+            hits = self.vectors.search(alias, vector, limit=limit)
         return {
             "dataset": dataset,
             "query": query,
@@ -320,44 +353,61 @@ class DemoEngine:
             return self.engine.rollback(dataset, reason=reason)
 
     def versions(self, limit: int = 200) -> list[dict[str, Any]]:
-        rows = [self.registry.versions[v] for v in reversed(self.registry.order)]
+        with self._lock:
+            rows = [self.registry.versions[v] for v in reversed(self.registry.order)]
         return rows[:limit]
 
     def promotions(self, limit: int = 200) -> list[dict[str, Any]]:
-        return list(reversed(self.registry.promotions))[:limit]
+        with self._lock:
+            return list(reversed(self.registry.promotions))[:limit]
 
     def version_detail(self, version_id: str) -> dict[str, Any] | None:
-        version = self.registry.versions.get(version_id)
-        if not version:
-            return None
-        return {
-            "version": version,
-            "quality_checks": self.registry.quality.get(version_id, []),
-            "quarantine": self.registry.quarantine.get(version_id, []),
-        }
+        with self._lock:
+            version = self.registry.versions.get(version_id)
+            if not version:
+                return None
+            return {
+                "version": version,
+                "quality_checks": self.registry.quality.get(version_id, []),
+                "quarantine": self.registry.quarantine.get(version_id, []),
+            }
 
     def stats(self) -> dict[str, Any]:
-        promoted = sum(1 for p in self.registry.promotions if p.get("decision") == "promoted")
-        rejected = sum(1 for p in self.registry.promotions if p.get("decision") == "rejected")
-        rolled = sum(1 for p in self.registry.promotions if p.get("decision") == "rolled_back")
-        datasets = {v["dataset"] for v in self.registry.versions.values()}
-        serving = {
-            ds: self.vectors.get_alias_target(f"{ds}__prod") for ds in datasets
-        }
-        return {
-            "versions": len(self.registry.versions),
-            "promoted": promoted,
-            "rejected": rejected,
-            "rolled_back": rolled,
-            "datasets": len(datasets),
-            "collections": len(self.vectors.collections),
-            "serving": serving,
-        }
+        with self._lock:
+            promoted = sum(
+                1 for p in self.registry.promotions if p.get("decision") == "promoted"
+            )
+            rejected = sum(
+                1 for p in self.registry.promotions if p.get("decision") == "rejected"
+            )
+            rolled = sum(
+                1 for p in self.registry.promotions if p.get("decision") == "rolled_back"
+            )
+            datasets = {v["dataset"] for v in self.registry.versions.values()}
+            serving = {ds: self.vectors.get_alias_target(f"{ds}__prod") for ds in datasets}
+            return {
+                "versions": len(self.registry.versions),
+                "promoted": promoted,
+                "rejected": rejected,
+                "rolled_back": rolled,
+                "datasets": len(datasets),
+                "collections": len(self.vectors.collections),
+                "serving": serving,
+            }
 
     def reset(self) -> None:
         with self._lock:
-            self.__init__()
+            self._clear_state()
 
 
-# module-level singleton used by the gateway demo router
+# --------------------------------------------------------------------------- singleton
+# Module-level singleton used by the gateway demo router.
+#
+# IMPORTANT — SINGLE-WORKER CONSTRAINT:
+# This engine holds all demo state in this process's memory. If the gateway is
+# run with more than one worker (e.g. ``uvicorn --workers 2``), each worker gets
+# its OWN DemoEngine and the console would show inconsistent stats/versions
+# depending on which worker answered a given request. The Dockerfile therefore
+# pins the gateway to a single worker. For a genuinely horizontally-scaled demo,
+# move this state into Redis/Postgres (the real pipeline already does).
 demo_engine = DemoEngine()

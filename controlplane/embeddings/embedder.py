@@ -37,9 +37,12 @@ class HashingEmbedder:
         if not tokens:
             return vector
 
-        # term frequency with signed feature hashing
+        # term frequency with signed feature hashing.
+        # blake2b (not md5): the hash here is a pure feature-index function, but
+        # md5 trips FIPS-restricted environments and every security scanner.
+        # blake2b is fast, non-flagged, and 8 bytes is plenty for our buckets.
         for token in tokens:
-            digest = hashlib.md5(token.encode()).digest()
+            digest = hashlib.blake2b(token.encode(), digest_size=8).digest()
             index = int.from_bytes(digest[:4], "little") % self.dim
             sign = 1.0 if digest[4] % 2 == 0 else -1.0
             vector[index] += sign

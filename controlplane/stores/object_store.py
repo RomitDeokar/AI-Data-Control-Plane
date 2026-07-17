@@ -35,11 +35,17 @@ class ObjectStore:
             secret_key=secret_key or settings.minio_secret_key,
             secure=secure,
         )
+        # Remember buckets we've already ensured this process so we don't do a
+        # bucket_exists round-trip before every single put.
+        self._ensured: set[str] = set()
 
     # ------------------------------------------------------------------ basics
     def ensure_bucket(self, bucket: str) -> None:
+        if bucket in self._ensured:
+            return
         if not self.client.bucket_exists(bucket):
             self.client.make_bucket(bucket)
+        self._ensured.add(bucket)
 
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self.ensure_bucket(bucket)

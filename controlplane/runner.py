@@ -27,29 +27,20 @@ from typing import Any
 from controlplane.config import settings
 from controlplane.embeddings import HashingEmbedder
 from controlplane.enrichment import Enricher
+from controlplane.ingest_utils import parse_records
 from controlplane.models import DatasetVersion, TriggerType, VersionStatus, new_version_id
 from controlplane.promotion import PromotionEngine
 from controlplane.quality import QualityGateRunner
+from controlplane.schemas import DATASET_SCHEMAS, schema_for
 from controlplane.stores import MetadataRegistry, ObjectStore, QdrantStore
 from controlplane.validation import SchemaValidator, detect_drift
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("controlplane.runner")
 
-# Default dataset contracts. In production these live in the schema_registry
-# table; this constant is the fallback for first-run bootstrapping.
-DEFAULT_SCHEMAS: dict[str, dict[str, Any]] = {
-    "products": {
-        "required": ["id", "title", "category", "price"],
-        "types": {"id": "str", "title": "str", "category": "str", "price": "number"},
-        "constraints": {"price": {"min": 0}, "title": {"min_length": 2}},
-    },
-    "documents": {
-        "required": ["id", "title", "content"],
-        "types": {"id": "str", "title": "str", "content": "str"},
-        "constraints": {"content": {"min_length": 10}},
-    },
-}
+# Dataset contracts now live in controlplane.schemas (single source of truth).
+# Re-exported under the historical name for backwards compatibility.
+DEFAULT_SCHEMAS: dict[str, dict[str, Any]] = DATASET_SCHEMAS
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -77,11 +68,7 @@ def cmd_ingest(args: argparse.Namespace) -> dict[str, Any]:
     else:
         raise SystemExit("provide --source-uri or --local-file")
 
-    text = raw.decode()
-    if text.lstrip().startswith("["):
-        records = json.loads(text)
-    else:  # JSONL
-        records = [json.loads(line) for line in text.splitlines() if line.strip()]
+    records = parse_records(raw.decode())
 
     version_id = args.version_id or new_version_id(args.dataset)
     registry.register_version(
@@ -113,7 +100,7 @@ def cmd_validate(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit(f"unknown version {args.version_id}")
 
     records = store.get_jsonl(settings.bucket_staged, f"{args.version_id}/records.jsonl")
-    schema = DEFAULT_SCHEMAS.get(version["dataset"], {"required": ["id"], "types": {}, "constraints": {}})
+    schema = schema_for(version["dataset"])
 
     result = SchemaValidator(schema).validate_batch(records)
 
@@ -180,11 +167,13 @@ def cmd_gate(args: argparse.Namespace) -> dict[str, Any]:
     store = ObjectStore()
     registry = MetadataRegistry()
     version = registry.get_version(args.version_id)
+    if version is None:
+        raise ValueError(f"unknown version_id: {args.version_id}")
     records = store.get_jsonl(settings.bucket_staged, f"{args.version_id}/records.jsonl")
 
     validation = store.get_json(settings.bucket_artifacts, f"{args.version_id}/validation_report.json")
     embedding = store.get_json(settings.bucket_artifacts, f"{args.version_id}/embedding_report.json")
-    schema = DEFAULT_SCHEMAS.get(version["dataset"], {"required": ["id"]})
+    schema = schema_for(version["dataset"])
 
     verdict = QualityGateRunner().run_all(
         version_id=args.version_id,
@@ -207,6 +196,8 @@ def cmd_promote(args: argparse.Namespace) -> dict[str, Any]:
     registry = MetadataRegistry()
     vectors = QdrantStore()
     version = registry.get_version(args.version_id)
+    if version is None:
+        raise ValueError(f"unknown version_id: {args.version_id}")
     records = store.get_jsonl(settings.bucket_staged, f"{args.version_id}/records.jsonl")
     quality = store.get_json(settings.bucket_artifacts, f"{args.version_id}/quality_report.json")
 

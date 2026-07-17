@@ -10,14 +10,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 
 router = APIRouter()
 
-_CONSOLE_HTML = (Path(__file__).parent.parent / "static" / "console.html").read_text()
+_CONSOLE_HTML = Path(__file__).parent.parent / "static" / "console.html"
 
 
-@router.get("/", include_in_schema=False, response_class=HTMLResponse)
-def console() -> str:
-    """The Control Plane Console (single-page dashboard)."""
-    return _CONSOLE_HTML
+@router.get("/", include_in_schema=False)
+def console() -> FileResponse:
+    """The Control Plane Console (single-page dashboard).
+
+    Served via FileResponse (read per request) rather than slurped once at
+    import time, so edits to console.html are picked up without restarting the
+    server during development.
+    """
+    return FileResponse(_CONSOLE_HTML, media_type="text/html")

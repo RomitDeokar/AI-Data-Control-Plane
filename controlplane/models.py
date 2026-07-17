@@ -31,9 +31,13 @@ class TriggerType(StrEnum):
 
 
 def new_version_id(dataset: str) -> str:
-    """Generate a sortable, human-readable version id: products-20260703-142530-a1b2."""
+    """Generate a sortable, human-readable version id: products-20260703-142530-a1b2c3d4.
+
+    The timestamp prefix keeps ids chronologically sortable; the random suffix
+    guarantees uniqueness even when many ids are minted within the same second.
+    """
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    suffix = uuid.uuid4().hex[:4]
+    suffix = uuid.uuid4().hex[:8]
     return f"{dataset}-{ts}-{suffix}"
 
 

@@ -41,10 +41,21 @@ from controlplane.config import settings
 logger = logging.getLogger(__name__)
 
 DLQ_SUFFIX = ":dlq"
-DISPATCH_SET = "cp:dispatched"  # Redis SET of event ids already handed to Kestra
+# Sentinel returned by publish() when an identical event was already accepted
+# inside the idempotency window. Named (not a bare string literal scattered
+# across call sites) so callers can compare against EventBus.DUPLICATE.
+DUPLICATE = "duplicate"
+# Per-event dispatch markers live under this prefix, one key per event id, each
+# with its own TTL. (The old design used a single SET with one shared EXPIRE,
+# so a single expire wiped *all* markers at once and the relay re-fired every
+# recent event. Per-key TTLs make each marker expire independently.)
+DISPATCH_KEY_PREFIX = "cp:dispatched:"
 
 
 class EventBus:
+    #: Sentinel returned by :meth:`publish` for a duplicate event.
+    DUPLICATE = DUPLICATE
+
     def __init__(self, url: str | None = None, stream: str | None = None):
         self.redis = redis.Redis.from_url(url or settings.redis_url, decode_responses=True)
         self.stream = stream or settings.event_stream
@@ -66,7 +77,7 @@ class EventBus:
                 lock_key, "1", nx=True, ex=settings.idempotency_ttl_seconds
             ):
                 logger.warning("duplicate event dropped: %s/%s", event_type, idempotency_key)
-                return "duplicate"
+                return DUPLICATE
 
         event_id = self.redis.xadd(
             self.stream,
@@ -77,19 +88,29 @@ class EventBus:
             },
         )
         logger.info("published %s → %s (%s)", event_type, self.stream, event_id)
-        return event_id
+        return event_id.decode() if isinstance(event_id, bytes) else str(event_id)
 
     def mark_dispatched(self, event_id: str) -> None:
         """Record that an event was successfully handed to Kestra.
 
-        We use a side SET rather than rewriting the stream entry (stream fields
-        are immutable) so the relay can cheaply skip already-dispatched events.
+        Each event gets its OWN key with its OWN TTL (a side marker rather than
+        rewriting the immutable stream entry). Because markers expire
+        individually, one expiry can never wipe the whole dispatch history and
+        cause the relay to re-fire every recent event.
         """
-        self.redis.sadd(DISPATCH_SET, event_id)
-        self.redis.expire(DISPATCH_SET, settings.idempotency_ttl_seconds)
+        self.redis.set(
+            f"{DISPATCH_KEY_PREFIX}{event_id}",
+            "1",
+            ex=settings.dispatch_ttl_seconds,
+        )
 
     def is_dispatched(self, event_id: str) -> bool:
-        return bool(self.redis.sismember(DISPATCH_SET, event_id))
+        return bool(self.redis.exists(f"{DISPATCH_KEY_PREFIX}{event_id}"))
+
+    def _dispatched_count(self) -> int:
+        """Best-effort count of live dispatch markers (for pending_stats)."""
+        # SCAN keeps this O(N) without blocking Redis like KEYS would.
+        return sum(1 for _ in self.redis.scan_iter(match=f"{DISPATCH_KEY_PREFIX}*"))
 
     # ---------------------------------------------------------------- consume
     def ensure_group(self) -> None:
@@ -191,5 +212,5 @@ class EventBus:
             "pending": info.get("pending", 0),
             "stream_length": self.redis.xlen(self.stream),
             "dlq_length": self.redis.xlen(self.stream + DLQ_SUFFIX),
-            "dispatched": self.redis.scard(DISPATCH_SET),
+            "dispatched": self._dispatched_count(),
         }

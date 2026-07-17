@@ -41,10 +41,12 @@ from controlplane.events import EventBus
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("controlplane.relay")
 
-WEBHOOK_PATH = (
-    "/api/v1/executions/webhook/controlplane.ingestion/"
-    "dataset-pipeline/controlplane-webhook-key"
-)
+def _webhook_path() -> str:
+    """Kestra webhook path built from the single shared key in settings."""
+    return (
+        "/api/v1/executions/webhook/controlplane.ingestion/"
+        f"dataset-pipeline/{settings.webhook_key}"
+    )
 
 
 def _trigger_kestra(client: httpx.Client, payload: dict[str, Any]) -> bool:
@@ -54,7 +56,9 @@ def _trigger_kestra(client: httpx.Client, payload: dict[str, Any]) -> bool:
         "source_uri": payload.get("source_uri"),
         "trigger_type": "relay",
     }
-    resp = client.post(f"{settings.kestra_url}{WEBHOOK_PATH}", json=body, timeout=10.0)
+    resp = client.post(
+        f"{settings.kestra_url}{_webhook_path()}", json=body, timeout=10.0
+    )
     return resp.status_code in (200, 201)
 
 

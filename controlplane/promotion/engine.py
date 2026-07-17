@@ -104,26 +104,68 @@ class PromotionEngine:
         return decision
 
     def rollback(self, dataset: str, reason: str = "manual rollback") -> dict[str, Any]:
-        """Re-point the prod alias to the previously promoted version."""
+        """Re-point the prod alias to the version promoted *immediately before*
+        the one currently serving.
+
+        The promotion ledger is the source of truth. ``get_promotion_history``
+        returns promoted versions newest-first and is stable across rollbacks
+        (rollback events carry ``decision="rolled_back"`` and are excluded from
+        that view), so it gives a deterministic chain ``[v3, v2, v1]``.
+
+        We locate the currently-serving version in that chain and step *one
+        position older* — then keep stepping while the candidate's collection
+        has been dropped by the retention window (:attr:`RETAIN_VERSIONS`). This
+        prevents two failure modes:
+
+        * **Bouncing** — picking "newest promoted that isn't current" made a
+          second rollback jump back to the version we just left. Stepping by
+          ledger position instead walks v3 → v2 → v1 monotonically.
+        * **Dead alias** — rollback never targets a collection that no longer
+          exists, so the prod alias never points at nothing.
+        """
         alias = f"{dataset}__prod"
         current = self.vector_store.get_alias_target(alias)
-        previous_version = self.registry.get_previous_promoted(dataset, exclude_current=current)
+        current_version = (
+            current.replace(f"{dataset}__", "", 1) if current else None
+        )
 
-        if previous_version is None:
-            return {"decision": "rollback_failed", "reason": "no previous promoted version"}
+        existing = set(self.vector_store.list_collections())
+        history = self.registry.get_promotion_history(dataset)
 
-        target = f"{dataset}__{previous_version}"
+        # Find where the currently-serving version sits in the ledger, then
+        # consider everything strictly older than it. If the current version
+        # isn't in the promoted history (edge case), fall back to the whole
+        # history so we still have a candidate list.
+        try:
+            start = history.index(current_version) + 1  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            start = 0
+
+        target_version: str | None = None
+        for candidate in history[start:]:
+            if candidate == current_version:
+                continue
+            if f"{dataset}__{candidate}" in existing:
+                target_version = candidate
+                break
+
+        if target_version is None:
+            return {
+                "decision": "rollback_failed",
+                "reason": "no previous promoted version with a live collection",
+            }
+
+        target = f"{dataset}__{target_version}"
         self.vector_store.set_alias(alias, target)
         self.registry.record_promotion(
-            version_id=previous_version,
+            version_id=target_version,
             decision="rolled_back",
             from_target=current,
             to_target=target,
             reason=reason,
             gate_summary={},
         )
-        if current:
-            current_version = current.replace(f"{dataset}__", "", 1)
+        if current_version:
             self.registry.update_version_status(current_version, "rolled_back")
 
         return {"decision": "rolled_back", "alias": alias, "now_serving": target}

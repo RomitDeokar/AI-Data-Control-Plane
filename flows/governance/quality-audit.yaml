@@ -23,15 +23,14 @@ tasks:
   - id: audit
     type: io.kestra.plugin.scripts.python.Script
     description: Query the registry and compute platform KPIs.
-    containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    # Baked runner image (issue #22): deps + controlplane lib pre-installed.
+    containerImage: control-plane/runner:1.0.0
     timeout: PT3M
     env:
       DATABASE_URL: "postgresql://kestra:k3str4@postgres:5432/kestra"
       MINIO_ENDPOINT: "minio:9000"
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
-    beforeCommands:
-      - pip install -q psycopg[binary] minio
     script: |
       import io, json, os
       from datetime import datetime, timezone

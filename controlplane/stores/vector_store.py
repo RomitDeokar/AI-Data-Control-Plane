@@ -68,37 +68,25 @@ class QdrantStore:
 
     # ---------------------------------------------------------------- aliases
     def set_alias(self, alias: str, collection: str) -> None:
-        """Atomically re-point alias → collection (blue/green switch)."""
-        response = self.client.post(
-            "/collections/aliases",
-            json={
-                "actions": [
-                    {"delete_alias": {"alias_name": alias}},
-                    {
-                        "create_alias": {
-                            "alias_name": alias,
-                            "collection_name": collection,
-                        }
-                    },
-                ]
-            },
+        """Re-point alias → collection (blue/green switch).
+
+        Qdrant applies all actions in a single ``/collections/aliases`` request
+        atomically. When the alias already exists we send delete+create together
+        so there is never a window where the alias is absent. On the *first*
+        promotion the alias does not exist yet, so we detect that case up front
+        (by inspecting the current alias target) and send create-only — rather
+        than firing a delete that errors and then retrying, which is what opened
+        a brief "alias missing → search 404" window before.
+        """
+        alias_exists = self.get_alias_target(alias) is not None
+        actions: list[dict[str, Any]] = []
+        if alias_exists:
+            actions.append({"delete_alias": {"alias_name": alias}})
+        actions.append(
+            {"create_alias": {"alias_name": alias, "collection_name": collection}}
         )
-        if response.status_code != 200:
-            # first promotion: delete_alias fails because alias doesn't exist yet
-            response = self.client.post(
-                "/collections/aliases",
-                json={
-                    "actions": [
-                        {
-                            "create_alias": {
-                                "alias_name": alias,
-                                "collection_name": collection,
-                            }
-                        }
-                    ]
-                },
-            )
-            response.raise_for_status()
+        response = self.client.post("/collections/aliases", json={"actions": actions})
+        response.raise_for_status()
         logger.info("alias %s → %s", alias, collection)
 
     def get_alias_target(self, alias: str) -> str | None:

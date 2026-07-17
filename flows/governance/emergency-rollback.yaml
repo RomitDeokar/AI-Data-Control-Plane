@@ -29,7 +29,8 @@ tasks:
   - id: rollback
     type: io.kestra.plugin.scripts.python.Commands
     description: Re-point {dataset}__prod alias to the previous promoted version.
-    containerImage: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    # Baked runner image (issue #22): deps + controlplane lib pre-installed.
+    containerImage: control-plane/runner:1.0.0
     timeout: PT2M
     env:
       DATABASE_URL: "postgresql://kestra:k3str4@postgres:5432/kestra"
@@ -40,8 +41,6 @@ tasks:
       REDIS_URL: "redis://redis:6379/0"
     namespaceFiles:
       enabled: true
-    beforeCommands:
-      - pip install -q minio psycopg[binary] httpx redis
     commands:
       - >
         python -m controlplane.runner rollback

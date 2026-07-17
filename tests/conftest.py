@@ -60,14 +60,25 @@ class FakeRegistry:
     def record_quality_report(self, verdict) -> None:
         self.quality_reports.append(verdict)
 
+    def get_promotion_history(self, dataset: str, limit: int = 50) -> list[str]:
+        seen: set[str] = set()
+        history: list[str] = []
+        for entry in reversed(self.promotions):
+            if entry.get("decision") != "promoted":
+                continue
+            vid = entry.get("version_id")
+            if vid in seen:
+                continue
+            seen.add(vid)
+            history.append(vid)
+        return history
+
     def get_previous_promoted(self, dataset: str, exclude_current: str | None) -> str | None:
         exclude = (exclude_current or "").replace(f"{dataset}__", "", 1)
-        promoted = [
-            v["version_id"]
-            for v in self.versions.values()
-            if v.get("status") == "promoted" and v["version_id"] != exclude
-        ]
-        return promoted[-1] if promoted else None
+        for vid in self.get_promotion_history(dataset):
+            if vid != exclude:
+                return vid
+        return None
 
 
 @pytest.fixture

@@ -1,8 +1,8 @@
 # Custom Kestra Plugin — `PromotionGate`
 
-> The advanced differentiator. Most portfolios *use* an orchestrator; this one
-> *extends* it with a first-class, reusable task written in Java against the
-> official Kestra plugin API.
+A first-class, reusable Kestra task written in Java against the official Kestra
+plugin API. It packages the control plane's promotion decision as a native
+orchestrator primitive rather than re-implementing it in inline scripts.
 
 ## What it is
 
@@ -36,25 +36,21 @@ Outputs:
 
 It mirrors `controlplane.quality.QualityGateRunner` from the Python library — the
 same governance logic, offered natively to the orchestrator so it's reusable
-across teams and pipelines. That's the ecosystem-native way to package a control.
-
-## Why it matters (for hiring)
-
-A merged PR or a published, working plugin is worth more than ten tutorial repos.
-It signals you understand a tool deeply enough to **extend** it — Java, an
-annotation processor, the plugin manifest, and the test harness — not just wire
-YAML together.
+across teams and pipelines.
 
 ## Build & test
 
-Requires JDK 21 and Gradle (or add the Gradle wrapper). Aligns with the Kestra
-version in [`../docker-compose.yml`](../docker-compose.yml).
+Requires JDK 21. The project ships a Gradle wrapper, so no separate Gradle
+install is needed. The Kestra dependency version aligns with
+[`../docker-compose.yml`](../docker-compose.yml).
 
 ```bash
 cd plugin
-gradle test          # runs PromotionGateTest against the Kestra test harness
-gradle jar           # produces build/libs/plugin-controlplane-1.0.0.jar
+./gradlew test       # runs PromotionGateTest against the Kestra test harness
+./gradlew jar        # produces build/libs/plugin-controlplane-1.0.0.jar
 ```
+
+On Windows use `gradlew.bat` instead of `./gradlew`.
 
 ## Install into your local Kestra
 
@@ -73,6 +69,8 @@ autocompletion included.
 
 ```
 plugin/
+├─ gradlew / gradlew.bat # Gradle wrapper (JDK 21)
+├─ gradle/wrapper/       # wrapper jar + pinned distribution (gradle 8.5)
 ├─ build.gradle          # java-library, Kestra deps, plugin manifest
 ├─ settings.gradle
 └─ src/
@@ -87,5 +85,3 @@ plugin/
 
 Follow the [official Kestra plugin developer guide](https://kestra.io/docs/plugin-developer-guide)
 to publish to a Maven repository, then reference it in Kestra's plugin config.
-A published plugin (or a PR to `kestra-io/plugin-*`) is the ultimate credibility
-signal for platform/backend roles.
